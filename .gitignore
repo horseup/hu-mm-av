@@ -1,4 +1,5 @@
 # Build output
+third_party/
 dist/
 *.tar.gz
 server/dist/

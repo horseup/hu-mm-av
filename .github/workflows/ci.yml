@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [development]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Webapp syntax check
+        run: node --check webapp/main.js && node --check public/pcm-tap.js
+      - name: Go tests
+        run: make test
+      - name: Bundle
+        run: make bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-bundle
+          path: dist/*.tar.gz
+          if-no-files-found: error

@@ -56,4 +56,8 @@ Layout: `server/` (Go: HTTP endpoints, Bedrock client with SigV4 signing), `weba
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). The server binary includes third-party Go modules under their own licenses. See [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); every release bundle also ships their license and NOTICE files in `third_party/`.
+
+Security reports: see [SECURITY.md](SECURITY.md). Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Mattermost is a trademark of Mattermost, Inc. This project is not affiliated with or endorsed by Mattermost, Amazon or Mistral AI.
