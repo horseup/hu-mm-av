@@ -10,7 +10,7 @@ Telegram-style voice messages for [Mattermost](https://mattermost.com). Hold the
 - **Keyboard.** Hold **⌥⇧V** (Alt+Shift+V) to record and let go to send; Esc while holding cancels. A short tap starts a hands-free recording; tap again or press Enter to send. The composer with focus gets the recording (a thread or the channel); with none focused, the channel composer does. Switching to another window while holding locks the recording instead of sending it.
 - **Live transcript.** While you talk, audio goes to the server in chunks cut at pauses, and the text appears above the waveform about a second behind you. When you send, the transcript is already in the message. That's why mobile users see it, and why the post never shows "Edited".
 - **Player.** A waveform you can click to seek, 1×/1.5×/2× speed, one message playing at a time, and the transcript under a chevron.
-- **Small files.** The browser's own encoder records AAC (`.m4a`), so the plugin ships no encoder, and the files play everywhere, including the Mattermost mobile apps.
+- **Small files.** The browser's own encoder records AAC (`.m4a`), so the plugin ships no encoder, and the files play everywhere, including the Mattermost mobile apps. The browser writes the recording in fragments without a total length; before upload the plugin rewrites it as a regular `.m4a` (audio bytes unchanged), so every player shows the right length and can seek.
 - **Mobile.** The mobile apps play voice messages and show the transcript as the message text. They cannot record: Mattermost mobile does not run plugin UI.
 
 ## Install
@@ -49,11 +49,11 @@ Voxtral Mini is billed per token at $0.00005 per 1K in eu-west-1. Audio counts a
 docker compose -f dev/docker-compose.yml -p hu-mm-av up -d   # Mattermost 11.7 on http://localhost:8065
 ./dev/seed.sh                                                # dev users and a team
 aws configure export-credentials --format env-no-export > dev/.env.aws   # optional: credentials for transcription (gitignored)
-make test           # Go tests, in Docker
+make test           # Go and webapp tests, in Docker
 make deploy-local   # build, bundle and install on the local server
 ```
 
-Layout: `server/` (Go: HTTP endpoints, Bedrock client with SigV4 signing), `webapp/main.js` (plain JS, no build step), `public/pcm-tap.js` (AudioWorklet), `spike/` (scripts from the feasibility spike).
+Layout: `server/` (Go: HTTP endpoints, Bedrock client with SigV4 signing), `webapp/main.js` (plain JS, no build step; `webapp/mp4.test.mjs` tests its MP4 rewrite), `public/pcm-tap.js` (AudioWorklet), `spike/` (scripts from the feasibility spike).
 
 ## License
 

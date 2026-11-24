@@ -1,5 +1,6 @@
 # Builds run in Docker, so the host needs no Go toolchain.
 GO_IMAGE ?= golang:1.27.4-alpine
+NODE_IMAGE ?= node:22-alpine
 PLUGIN_ID := $(shell python3 -c 'import json;print(json.load(open("plugin.json"))["id"])')
 VERSION := $(shell python3 -c 'import json;print(json.load(open("plugin.json"))["version"])')
 BUNDLE := dist/$(PLUGIN_ID)-$(VERSION).tar.gz
@@ -15,6 +16,7 @@ tidy:
 
 test:
 	$(GO) go test ./...
+	docker run --rm -v "$(CURDIR)/webapp:/src" -w /src $(NODE_IMAGE) node --test mp4.test.mjs
 
 # Stripped, static binaries for the two Linux targets Mattermost servers run on.
 server:

@@ -196,11 +196,166 @@
         return {mime: recorder.mimeType, startedAt, level, live, maxMs,
             stop: async () => {
                 if (recorder.state !== 'inactive') recorder.stop();
-                const blob = await stopped;
+                const blob = await toRegularMp4(await stopped);
                 if (live) live.end();
                 source.close();
                 return {blob, ms: performance.now() - startedAt};
             }};
+    }
+
+    // mp4:start
+    // Chromium's MediaRecorder writes fragmented MP4: a header without the total length, then one
+    // moof/mdat pair per 250 ms. Players that trust the header get the length wrong; on Android the
+    // Mattermost app shows 0:00 and the progress bar jumps to the end. defragmentMp4 rewrites the file
+    // as a regular MP4 (ftyp, moov with one sample table and the real duration, mdat). The audio
+    // bytes are copied unchanged. Returns null when the input has no fragments, and throws on
+    // anything it does not understand, so the caller can keep the original.
+    function defragmentMp4(input) {
+        // A plain Uint8Array view, so slice() copies (a Node Buffer's slice() shares memory).
+        const u8 = ArrayBuffer.isView(input) ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength) : new Uint8Array(input);
+        const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+        const fail = (why) => { throw new Error('mp4: ' + why); };
+        const boxes = (start, end) => {
+            const out = [];
+            for (let o = start; o < end;) {
+                if (o + 8 > end) fail('truncated box header at ' + o);
+                let size = dv.getUint32(o), hdr = 8;
+                if (size === 1) { size = Number(dv.getBigUint64(o + 8)); hdr = 16; } else if (size === 0) size = end - o;
+                if (size < hdr || o + size > end) fail('bad box size at ' + o);
+                out.push({type: String.fromCharCode(...u8.subarray(o + 4, o + 8)), start: o, body: o + hdr, end: o + size});
+                o += size;
+            }
+            return out;
+        };
+        const children = (b, type) => boxes(b.body, b.end).filter((c) => c.type === type);
+        const child = (b, type) => children(b, type)[0] || fail('missing ' + type);
+        const raw = (b) => u8.subarray(b.start, b.end);
+        const flags = (b) => dv.getUint32(b.body) & 0xffffff;
+        const v1 = (b) => u8[b.body] === 1;
+
+        const top = boxes(0, u8.length);
+        const moofs = top.filter((b) => b.type === 'moof');
+        const moov = top.find((b) => b.type === 'moov');
+        if (!moofs.length) return null;
+        if (!moov) fail('missing moov');
+        const traks = children(moov, 'trak');
+        if (traks.length !== 1) fail('expected one track, got ' + traks.length);
+        const trackId = dv.getUint32(child(traks[0], 'tkhd').body + (v1(child(traks[0], 'tkhd')) ? 20 : 12));
+        const trex = boxes(moov.body, moov.end).filter((b) => b.type === 'mvex').flatMap((m) => children(m, 'trex'))
+            .find((t) => dv.getUint32(t.body + 4) === trackId);
+        const trexDur = trex ? dv.getUint32(trex.body + 12) : 0;
+        const trexSize = trex ? dv.getUint32(trex.body + 16) : 0;
+
+        // Collect every sample's duration, size and byte range from the fragments (ISO 14496-12 tfhd/trun).
+        const durations = [], sizes = [], ranges = [];
+        let clock = 0; // media time reached so far
+        for (const moof of moofs) {
+            for (const traf of children(moof, 'traf')) {
+                const tfhd = child(traf, 'tfhd');
+                if (dv.getUint32(tfhd.body + 4) !== trackId) fail('fragment for another track');
+                const tfdt = children(traf, 'tfdt')[0];
+                if (tfdt) { // Chromium leaves small gaps between fragments; keep its timeline, as ffmpeg -c copy does
+                    const at = v1(tfdt) ? Number(dv.getBigUint64(tfdt.body + 4)) : dv.getUint32(tfdt.body + 4);
+                    if (durations.length && at > clock) durations[durations.length - 1] += at - clock;
+                    clock = Math.max(clock, at);
+                }
+                const tf = flags(tfhd);
+                let p = tfhd.body + 8, base = moof.start, defDur = trexDur, defSize = trexSize;
+                if (tf & 0x1) { base = Number(dv.getBigUint64(p)); p += 8; }
+                if (tf & 0x2) p += 4;
+                if (tf & 0x8) { defDur = dv.getUint32(p); p += 4; }
+                if (tf & 0x10) { defSize = dv.getUint32(p); p += 4; }
+                let pos = base;
+                for (const trun of children(traf, 'trun')) {
+                    const rf = flags(trun), n = dv.getUint32(trun.body + 4);
+                    let q = trun.body + 8;
+                    if (rf & 0x1) { pos = base + dv.getInt32(q); q += 4; }
+                    if (rf & 0x4) q += 4;
+                    const start = pos;
+                    for (let i = 0; i < n; i++) {
+                        let d = defDur, s = defSize;
+                        if (rf & 0x100) { d = dv.getUint32(q); q += 4; }
+                        if (rf & 0x200) { s = dv.getUint32(q); q += 4; }
+                        if (rf & 0x400) q += 4;
+                        if (rf & 0x800) q += 4;
+                        durations.push(d); sizes.push(s); pos += s; clock += d;
+                    }
+                    if (q > trun.end) fail('trun shorter than its sample count');
+                    if (start < 0 || pos > u8.length) fail('sample data outside the file');
+                    if (pos > start) ranges.push([start, pos]);
+                }
+            }
+        }
+        if (!sizes.length || durations.some((d) => !d)) fail('no samples or a sample without duration');
+
+        const word = (out, at, value) => new DataView(out.buffer, out.byteOffset).setUint32(at, value);
+        const ascii = (s) => Uint8Array.from(s, (c) => c.charCodeAt(0));
+        const join = (parts) => {
+            const out = new Uint8Array(parts.reduce((n, x) => n + x.length, 0));
+            parts.reduce((at, x) => { out.set(x, at); return at + x.length; }, 0);
+            return out;
+        };
+        const box = (type, parts) => { const head = new Uint8Array(8); head.set(ascii(type), 4); const out = join([head, ...parts]); word(out, 0, out.length); return out; };
+        const table = (type, values) => { // full box, version 0, flags 0, 32-bit fields
+            const out = new Uint8Array(12 + values.length * 4);
+            word(out, 0, out.length); out.set(ascii(type), 4);
+            values.forEach((v, i) => word(out, 12 + i * 4, v));
+            return out;
+        };
+        const withDuration = (b, at0, at1, value) => { // copy of a mvhd/tkhd/mdhd with its duration set
+            const out = u8.slice(b.start, b.end), at = b.body - b.start + (v1(b) ? at1 : at0);
+            const w = new DataView(out.buffer, out.byteOffset, out.byteLength);
+            if (v1(b)) w.setBigUint64(at, BigInt(value)); else w.setUint32(at, value);
+            return out;
+        };
+        const timescale = (b) => dv.getUint32(b.body + (v1(b) ? 20 : 12));
+
+        const mvhd = child(moov, 'mvhd'), mdhd = child(child(traks[0], 'mdia'), 'mdhd');
+        const mediaDur = durations.reduce((a, b) => a + b, 0);
+        const movieDur = Math.round(mediaDur * timescale(mvhd) / timescale(mdhd));
+        const stts = [];
+        for (const d of durations) {
+            if (stts.length && stts[stts.length - 1] === d) stts[stts.length - 2]++; else stts.push(1, d);
+        }
+        const rebuild = (b, fn) => box(b.type, boxes(b.body, b.end).map(fn).filter(Boolean));
+        const buildMoov = (dataOffset) => rebuild(moov, (b) => {
+            if (b.type === 'mvex') return null;
+            if (b.type === 'mvhd') return withDuration(b, 16, 24, movieDur);
+            if (b.type !== 'trak') return raw(b);
+            return rebuild(b, (t) => {
+                if (t.type === 'tkhd') return withDuration(t, 20, 28, movieDur);
+                if (t.type === 'edts') return null; // fragment-style edit lists do not carry over
+                if (t.type !== 'mdia') return raw(t);
+                return rebuild(t, (m) => {
+                    if (m.type === 'mdhd') return withDuration(m, 16, 24, mediaDur);
+                    if (m.type !== 'minf') return raw(m);
+                    return rebuild(m, (i) => i.type !== 'stbl' ? raw(i) : box('stbl', [raw(child(i, 'stsd')),
+                        table('stts', [stts.length / 2, ...stts]),
+                        table('stsc', [1, 1, sizes.length, 1]), // one chunk holds every sample
+                        table('stsz', [0, sizes.length, ...sizes]),
+                        table('stco', [1, dataOffset])]));
+                });
+            });
+        });
+        const ftyp = box('ftyp', [ascii('M4A '), new Uint8Array(4), ascii('M4A isomiso2mp42')]);
+        const header = ftyp.length + buildMoov(0).length + 8;
+        const moovOut = buildMoov(header);
+        const total = sizes.reduce((a, b) => a + b, 0);
+        if (header + total > 0xffffffff) fail('too large');
+        return join([ftyp, moovOut, box('mdat', ranges.map(([s, e]) => u8.subarray(s, e)))]);
+    }
+    // mp4:end
+
+    async function toRegularMp4(blob) {
+        if (!/^audio\/mp4/.test(blob.type)) return blob;
+        try {
+            const out = defragmentMp4(await blob.arrayBuffer());
+            if (out) log('mp4.defragmented', {from: blob.size, to: out.length});
+            return out ? new Blob([out], {type: blob.type}) : blob;
+        } catch (e) {
+            log('mp4.error', {message: String(e)});
+            return blob;
+        }
     }
 
     const decodeAudio = async (arrayBuffer) => {

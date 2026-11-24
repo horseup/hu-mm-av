@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Webapp syntax check
         run: node --check webapp/main.js && node --check public/pcm-tap.js
-      - name: Go tests
+      - name: Go and webapp tests
         run: make test
       - name: Bundle
         run: make bundle
