@@ -7,6 +7,7 @@ Telegram-style voice messages for [Mattermost](https://mattermost.com). Hold the
 ## Features
 
 - **Recording (desktop app and web).** Press and hold the mic in the composer, then release to send. Slide left to cancel. Drag up to lock for hands-free recording; then ✕ cancels, stop lets you listen back, and send sends. Shortcuts while locked: Esc cancels, ⌘S / Ctrl+S stops and plays back, Enter sends.
+- **Keyboard.** Hold **⌥⇧V** (Alt+Shift+V) to record and let go to send; Esc while holding cancels. A short tap starts a hands-free recording; tap again or press Enter to send. The composer with focus gets the recording (a thread or the channel); with none focused, the channel composer does. Switching to another window while holding locks the recording instead of sending it.
 - **Live transcript.** While you talk, audio goes to the server in chunks cut at pauses, and the text appears above the waveform about a second behind you. When you send, the transcript is already in the message. That's why mobile users see it, and why the post never shows "Edited".
 - **Player.** A waveform you can click to seek, 1×/1.5×/2× speed, one message playing at a time, and the transcript under a chevron.
 - **Small files.** The browser's own encoder records AAC (`.m4a`), so the plugin ships no encoder, and the files play everywhere, including the Mattermost mobile apps.

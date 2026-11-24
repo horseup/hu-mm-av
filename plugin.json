@@ -5,7 +5,7 @@
   "homepage_url": "https://github.com/horseup/hu-mm-av",
   "support_url": "https://github.com/horseup/hu-mm-av/issues",
   "icon_path": "assets/icon.svg",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "min_server_version": "11.7.0",
   "server": {
     "executables": {

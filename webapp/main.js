@@ -284,15 +284,21 @@
 
     const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
     const MOD = IS_MAC ? '⌘' : 'Ctrl';
-    const SHORTCUTS = {cancel: ['Esc'], stop: [MOD, 'S'], send: ['Enter']};
+    const SHORTCUTS = {cancel: ['Esc'], stop: [MOD, 'S'], send: ['Enter'], record: IS_MAC ? ['⌥', '⇧', 'V'] : ['Alt', 'Shift', 'V']};
+    // Hold-to-record: Option/Alt + Shift + V ("V for voice"). Neither Mattermost nor the Calls plugin uses it.
+    // e.code is used because Option changes e.key on macOS ("◊").
+    const isRecordCombo = (e) => e.code === 'KeyV' && e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey;
+    // Only one recorder (channel or thread composer) may be active at a time.
+    let activeOwner = null;
     const kbd = (k) => h('span', {key: k, style: {display: 'inline-block', minWidth: 16, padding: '0 4px', marginLeft: 4, borderRadius: 3, textAlign: 'center',
         background: 'rgba(255, 255, 255, 0.16)', fontSize: 11, lineHeight: '16px'}}, k);
     // Hover/focus tooltip in Mattermost's style: label plus shortcut keys.
-    function WithTooltip({label, keys, children}) {
+    function WithTooltip({label, keys, children, disabled}) {
         const [rect, setRect] = React.useState(null);
-        const show = (e) => setRect(e.currentTarget.getBoundingClientRect());
+        React.useEffect(() => { if (disabled) setRect(null); }, [disabled]);
+        const show = (e) => { if (!disabled) setRect(e.currentTarget.getBoundingClientRect()); };
         const hide = () => setRect(null);
-        return h('span', {onMouseEnter: show, onMouseLeave: hide, onFocus: show, onBlur: hide, onClick: hide, style: {display: 'inline-flex', flex: 'none'}},
+        return h('span', {onMouseEnter: show, onMouseLeave: hide, onFocus: show, onBlur: hide, onClick: hide, onPointerDown: hide, style: {display: 'inline-flex', flex: 'none'}},
             children,
             rect && window.ReactDOM.createPortal(h('div', {role: 'tooltip', 'data-humm': 'tooltip', style: {position: 'fixed', zIndex: 1002, pointerEvents: 'none',
                 left: rect.left + rect.width / 2, top: rect.top - 8, transform: 'translate(-50%, -100%)', whiteSpace: 'nowrap',
@@ -380,11 +386,20 @@
         const [liveEnabled, setLiveEnabled] = React.useState(false);
         const [sendError, setSendError] = React.useState(false);
         const autoStopRef = React.useRef(null);
+        const idRef = React.useRef(randomId());
+        const viaRef = React.useRef('pointer'); // how the current recording was started: 'pointer' or 'key'
+        const [via, setVia] = React.useState('pointer');
+        const keyDownAtRef = React.useRef(null);
+        const handlersRef = React.useRef({});
         const modeRef = React.useRef('idle');
         const recRef = React.useRef(null);
         const originRef = React.useRef(null);
         const previewRef = React.useRef(null);
-        const setMode = (m) => { modeRef.current = m; setModeState(m); log('mode', {m}); };
+        const setMode = (m) => {
+            modeRef.current = m; setModeState(m); log('mode', {m});
+            if (['idle', 'hint', 'error'].includes(m)) { if (activeOwner === idRef.current) activeOwner = null; } else activeOwner = idRef.current;
+        };
+        React.useEffect(() => () => { if (activeOwner === idRef.current) activeOwner = null; }, []);
         const flash = (m) => { setMode(m); setTimeout(() => modeRef.current === m && setMode('idle'), 1800); };
         const resetLive = () => { setLive({text: '', pending: false}); setLiveEnabled(false); };
         const active = mode !== 'idle';
@@ -458,16 +473,58 @@
             return () => window.removeEventListener('keydown', onKey, true);
         }, [mode]);
 
-        const onPointerDown = (e) => {
-            if (!['idle', 'hint', 'error'].includes(modeRef.current)) return;
-            e.preventDefault();
-            try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
-            originRef.current = {x: e.clientX, y: e.clientY};
+        const begin = (how) => {
+            viaRef.current = how; setVia(how);
             recRef.current = startRecording(props.draft.channelId, setLive);
             recRef.current.then((r) => setLiveEnabled(!!r.live), (err) => { log('rec.error', {message: String(err)}); recRef.current = null; setMode('idle'); });
             setElapsed(0); setLevels([]);
             setMode('recording');
         };
+        const onPointerDown = (e) => {
+            if (!['idle', 'hint', 'error'].includes(modeRef.current) || (activeOwner && activeOwner !== idRef.current)) return;
+            e.preventDefault();
+            try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
+            originRef.current = {x: e.clientX, y: e.clientY};
+            begin('pointer');
+        };
+
+        // Keyboard: hold ⌥⇧V to record and release to send. A short tap (< 0.5 s) starts a hands-free (locked)
+        // recording; tapping again or Enter sends, Esc cancels. Leaving the window while holding locks instead of
+        // sending. The composer with focus gets the recording; with none focused, the channel composer does.
+        handlersRef.current = {begin, discard, stopAndSend, sendPreview};
+        React.useEffect(() => {
+            if (!btnEl) return undefined;
+            const owns = () => {
+                if (activeOwner) return activeOwner === idRef.current;
+                const mine = btnEl.closest('.AdvancedTextEditor__body');
+                const el = document.activeElement;
+                const focused = el && el.closest ? el.closest('.AdvancedTextEditor__body') : null;
+                return focused ? focused === mine : !!btnEl.closest('#post-create');
+            };
+            const holdingByKey = () => viaRef.current === 'key' && modeRef.current === 'recording' && keyDownAtRef.current !== null;
+            const onDown = (e) => {
+                if (e.key === 'Escape' && holdingByKey() && owns()) {
+                    e.preventDefault(); e.stopPropagation(); keyDownAtRef.current = null; handlersRef.current.discard(); return;
+                }
+                if (!isRecordCombo(e) || !owns()) return;
+                e.preventDefault(); e.stopPropagation(); // also keeps "◊" out of the message box
+                if (e.repeat) return;
+                const m = modeRef.current;
+                if (['idle', 'hint', 'error'].includes(m)) { keyDownAtRef.current = performance.now(); handlersRef.current.begin('key'); } else if (m === 'locked') handlersRef.current.stopAndSend(); else if (m === 'preview') handlersRef.current.sendPreview();
+            };
+            const onUp = (e) => {
+                if (!holdingByKey() || !(e.code === 'KeyV' || e.key === 'Alt' || e.key === 'Shift')) return;
+                e.preventDefault();
+                const held = performance.now() - keyDownAtRef.current;
+                keyDownAtRef.current = null;
+                if (held < MIN_MS) setMode('locked'); else handlersRef.current.stopAndSend();
+            };
+            const onBlur = () => { if (holdingByKey()) { keyDownAtRef.current = null; setMode('locked'); } };
+            window.addEventListener('keydown', onDown, true);
+            window.addEventListener('keyup', onUp, true);
+            window.addEventListener('blur', onBlur);
+            return () => { window.removeEventListener('keydown', onDown, true); window.removeEventListener('keyup', onUp, true); window.removeEventListener('blur', onBlur); };
+        }, [btnEl]);
         const onPointerMove = (e) => {
             const o = originRef.current; const m = modeRef.current;
             if (!o || (m !== 'recording' && m !== 'cancel')) return;
@@ -482,7 +539,11 @@
 
         // --- overlay contents per mode ---
         let bar = null;
-        if (mode === 'recording') {
+        if (mode === 'recording' && via === 'key') {
+            bar = [h(Timer, {key: 't', ms: elapsed, blink: true}),
+                h('span', {key: 'c', 'data-humm': 'key-hint', style: {flex: 'none', fontSize: 13, color: muted}}, 'Loslassen: senden · Esc: abbrechen'),
+                h(LevelBars, {key: 'l', levels, color: RED})];
+        } else if (mode === 'recording') {
             bar = [h(Timer, {key: 't', ms: elapsed, blink: true}),
                 h('span', {key: 'c', 'data-humm': 'slide-hint', style: {display: 'inline-flex', alignItems: 'center', gap: 2, flex: 'none', fontSize: 13, color: muted}},
                     h('span', {'data-humm-anim': 'nudge', style: {animation: 'humm-nudge 1.2s ease-in-out infinite'}}, icon('chevL', 16)), 'Nach links: abbrechen'),
@@ -529,7 +590,7 @@
             overlays.push(h('div', {key: 'orb', 'data-humm-anim': 'pulse', style: {position: 'fixed', zIndex: 1001, pointerEvents: 'none', left: cx - 24, top: cy - 24, width: 48, height: 48, borderRadius: '50%',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', background: mode === 'cancel' ? 'rgba(var(--center-channel-color-rgb), 0.48)' : RED,
                 animation: mode === 'recording' ? 'humm-pulse 1.4s ease-out infinite' : 'none'}}, icon(mode === 'cancel' ? 'trash' : 'mic', 22)));
-            if (mode === 'recording') {
+            if (mode === 'recording' && via === 'pointer') {
                 overlays.push(h('div', {key: 'lock', 'data-humm': 'lock-hint', style: {position: 'fixed', zIndex: 1001, pointerEvents: 'none', left: cx - 18, top: cy - 24 - 76, width: 36, height: 68, borderRadius: 18,
                     display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'space-around', padding: '6px 0', boxSizing: 'border-box',
                     background: 'var(--center-channel-bg)', color: muted, border: '1px solid rgba(var(--center-channel-color-rgb), 0.16)', boxShadow: '0 2px 6px rgba(0, 0, 0, 0.12)'}},
@@ -543,10 +604,12 @@
             mode === 'error' ? 'Senden fehlgeschlagen' : 'Zum Aufnehmen gedrückt halten'));
         }
 
+        const micButton = h('button', {type: 'button', ref: setBtnEl, className: 'humm-mic', 'aria-label': 'Sprachnachricht aufnehmen (gedrückt halten)', 'aria-keyshortcuts': 'Alt+Shift+V', 'data-humm': 'mic',
+            disabled: mode === 'sending', onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp},
+        mode === 'sending' ? h('span', {'data-humm-anim': 'spin', 'aria-label': 'Wird gesendet', style: {width: 14, height: 14, borderRadius: '50%', border: '2px solid currentColor', borderTopColor: 'transparent', animation: 'humm-spin 0.8s linear infinite'}}) : icon('mic', 18));
         return h('span', {style: {display: 'inline-flex', alignItems: 'center'}, 'data-humm-mode': mode},
-            h('button', {type: 'button', ref: setBtnEl, className: 'humm-mic', 'aria-label': 'Sprachnachricht aufnehmen (gedrückt halten)', title: 'Gedrückt halten zum Aufnehmen', 'data-humm': 'mic',
-                disabled: mode === 'sending', onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp},
-            mode === 'sending' ? h('span', {'data-humm-anim': 'spin', 'aria-label': 'Wird gesendet', style: {width: 14, height: 14, borderRadius: '50%', border: '2px solid currentColor', borderTopColor: 'transparent', animation: 'humm-spin 0.8s linear infinite'}}) : icon('mic', 18)),
+            // Same element tree in every mode, so the button is never remounted mid-press.
+            h(WithTooltip, {label: 'Gedrückt halten zum Aufnehmen', keys: SHORTCUTS.record, disabled: mode !== 'idle'}, micButton),
             overlays.length ? window.ReactDOM.createPortal(overlays, document.body) : null);
     }
 
