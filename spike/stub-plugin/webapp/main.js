@@ -65,12 +65,14 @@
 
     async function sendVoice(blob, ms, mime, draft) {
         const t0 = performance.now();
+        // The 16 kHz WAV is for transcription only. It stays in memory (window.__humm.lastWav) until the
+        // plugin server exists; it is never attached to the post, so a voice message carries one file.
         const wav = await toWav16k(blob);
+        S.lastWav = wav;
         const ts = Date.now();
         const fd = new FormData();
         fd.append('channel_id', draft.channelId);
         fd.append('files', new File([blob], `voice-${ts}.m4a`, {type: mime}));
-        fd.append('files', new File([wav], `voice-${ts}.stt.wav`, {type: 'audio/wav'}));
         const up = await api('/files', {method: 'POST', body: fd});
         const post = await api('/posts', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
             channel_id: draft.channelId, root_id: draft.rootId || '', type: 'custom_hu_voice',
