@@ -1,21 +1,58 @@
 # hu-mm-av
 
-Telegram-style voice messages for [Mattermost](https://mattermost.com): hold the mic to record, release to send, and get an automatic transcript. Round video messages are planned.
+Telegram-style voice messages for [Mattermost](https://mattermost.com). Hold the mic to record, release to send, and watch the transcript appear while you talk. Round video messages are planned.
 
-**Status: spike, not usable yet.** See [docs/SCOPE.md](docs/SCOPE.md) for the plan.
+**Status: v0.1, in testing.** Tested on Mattermost 11.7 Team Edition. See [docs/SCOPE.md](docs/SCOPE.md) and [docs/SPIKE.md](docs/SPIKE.md).
 
-## What it will do
+## Features
 
-- Desktop app and web: press and hold the mic in the composer to record, then release to send. Slide away to cancel, or drag up to lock for hands-free recording. In locked mode you can listen back before sending, and a keyboard shortcut also records.
-- Voice messages are recorded as AAC (`.m4a`) by the browser's own encoder, so the plugin ships no encoder and the files play everywhere, including the Mattermost mobile apps.
-- Transcripts are written into the message text, so mobile users see them too. Speech-to-text defaults to Voxtral on Amazon Bedrock; an OpenAI-compatible endpoint can be configured instead.
-- Mobile apps can play messages but not record them: Mattermost mobile does not run plugin UI.
+- **Recording (desktop app and web).** Press and hold the mic in the composer, then release to send. Slide left to cancel. Drag up to lock for hands-free recording; then ✕ cancels, stop lets you listen back, and send sends. Shortcuts while locked: Esc cancels, ⌘S / Ctrl+S stops and plays back, Enter sends.
+- **Live transcript.** While you talk, audio goes to the server in chunks cut at pauses, and the text appears above the waveform about a second behind you. When you send, the transcript is already in the message. That's why mobile users see it, and why the post never shows "Edited".
+- **Player.** A waveform you can click to seek, 1×/1.5×/2× speed, one message playing at a time, and the transcript under a chevron.
+- **Small files.** The browser's own encoder records AAC (`.m4a`), so the plugin ships no encoder, and the files play everywhere, including the Mattermost mobile apps.
+- **Mobile.** The mobile apps play voice messages and show the transcript as the message text. They cannot record: Mattermost mobile does not run plugin UI.
+
+## Install
+
+1. Download the release bundle, or build it with `make bundle` (needs only Docker), then upload it under **System Console → Plugins → Plugin Management**.
+2. Enable the plugin and open its settings:
+   - **AWS region / Model ID:** the defaults (`eu-west-1`, `mistral.voxtral-mini-3b-2507`) are what was tested. Voxtral did not respond in eu-central-1.
+   - **AWS access key ID / secret:** or leave both empty, and the server uses `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` from its environment.
+   - **Most likely language:** helps with short clips. Other languages are still transcribed as spoken, never translated.
+3. Give the key only this permission:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": "bedrock:InvokeModel",
+    "Resource": "arn:aws:bedrock:eu-west-1::foundation-model/mistral.voxtral-mini-3b-2507"
+  }]
+}
+```
+
+4. Recommended: set Bedrock data retention to `none` (zero data retention) for the account or project; see the [AWS docs](https://docs.aws.amazon.com/bedrock/latest/userguide/data-retention.html).
+
+### What leaves your server
+
+Only the speech-to-text request: 16 kHz WAV chunks of 3–15 s, sent to Amazon Bedrock in the region you configure. The voice file itself stays in Mattermost's file storage. Chunks without speech are never sent.
+
+### Cost
+
+Voxtral Mini is billed per token at $0.00005 per 1K in eu-west-1. Audio counts as about 375 tokens per 30 s window, and short chunks seem to be billed a full window. 400 minutes a month come to roughly $0.10–0.20.
 
 ## Development
 
 ```bash
-docker compose -f dev/docker-compose.yml -p hu-mm-av up -d   # Mattermost on http://localhost:8065
+docker compose -f dev/docker-compose.yml -p hu-mm-av up -d   # Mattermost 11.7 on http://localhost:8065
+./dev/seed.sh                                                # dev users and a team
+aws configure export-credentials --format env-no-export > dev/.env.aws   # optional: credentials for transcription (gitignored)
+make test           # Go tests, in Docker
+make deploy-local   # build, bundle and install on the local server
 ```
+
+Layout: `server/` (Go: HTTP endpoints, Bedrock client with SigV4 signing), `webapp/main.js` (plain JS, no build step), `public/pcm-tap.js` (AudioWorklet), `spike/` (scripts from the feasibility spike).
 
 ## License
 

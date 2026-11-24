@@ -2,7 +2,7 @@
 
 Telegram-style voice messages for Mattermost, with automatic transcription. Round video messages follow in phase 2.
 
-Status: spike done 2026-11-24, see [SPIKE.md](SPIKE.md). Developed and tested against Mattermost 11.7.11 Team Edition.
+Status: spike done 2026-11-24 ([SPIKE.md](SPIKE.md)). v0.1 server part built the same day: live chunked transcription, server-created posts, transcript in the message at creation. Developed and tested against Mattermost 11.7.11 Team Edition.
 
 ## Decisions
 

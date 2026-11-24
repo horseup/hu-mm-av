@@ -21,6 +21,11 @@ services:
       - postgres
     ports:
       - "8065:8065"
+    # Optional AWS credentials for transcription (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN).
+    # Create with: aws configure export-credentials --format env-no-export > dev/.env.aws  (gitignored)
+    env_file:
+      - path: .env.aws
+        required: false
     environment:
       MM_SQLSETTINGS_DRIVERNAME: postgres
       MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:mmuser_dev_only@postgres:5432/mattermost?sslmode=disable&connect_timeout=10

@@ -1,24 +1,27 @@
-// Spike: hold-to-record voice messages in the Mattermost composer. Plain JS, no build step.
-// Tests the composer slot, pointer gestures, native AAC recording, 16 kHz WAV for STT,
-// and a custom_hu_voice post with file attachments. Not production code.
+// hu-mm-av webapp: hold-to-record voice messages in the Mattermost composer, live transcription while
+// recording, and an inline waveform player with a collapsible transcript. Plain JS, no build step.
 (function () {
     'use strict';
-    const PLUGIN_ID = 'de.horseup.mm-av-spike';
+    const PLUGIN_ID = 'de.horseup.mm-av';
     const React = window.React;
     const h = React.createElement;
     const MIME_CANDIDATES = ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm;codecs=opus'];
     const MIN_MS = 500; // shorter press = tap, show hint
     const SLIDE_PX = 60;
     const S = window.__humm = window.__humm || {events: []};
-    const log = (e, x) => { S.events.push({t: Date.now(), e, ...(x || {})}); console.log('[humm]', e, x || ''); };
+    const log = (e, x) => { S.events.push({t: Date.now(), e, ...(x || {})}); if (S.events.length > 200) S.events.shift(); console.debug('[hu-mm-av]', e, x || ''); };
 
     const csrf = () => (document.cookie.match(/MMCSRF=([^;]+)/) || [])[1] || '';
-    async function api(path, opts = {}) {
-        const res = await fetch('/api/v4' + path, {credentials: 'include', ...opts,
+    async function request(url, opts = {}) {
+        const res = await fetch(url, {credentials: 'include', ...opts,
             headers: {'X-Requested-With': 'XMLHttpRequest', 'X-CSRF-Token': csrf(), ...(opts.headers || {})}});
-        if (!res.ok) throw new Error(`${path} ${res.status} ${await res.text()}`);
+        if (!res.ok) throw new Error(`${url.split('?')[0]} ${res.status} ${await res.text()}`);
         return res.json();
     }
+    const api = (path, opts) => request('/api/v4' + path, opts);
+    const pluginApi = (path, opts) => request(`/plugins/${PLUGIN_ID}${path}`, opts);
+    let configPromise = null;
+    const pluginConfig = () => (configPromise = configPromise || pluginApi('/api/v1/config').catch((e) => { configPromise = null; log('config.error', {message: String(e)}); return {transcription: false}; }));
     const fmt = (ms) => { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 
     async function openSource() {
@@ -34,12 +37,131 @@
         return {stream, ctx, node: ctx.createMediaStreamSource(stream), close: () => { stream.getTracks().forEach((t) => t.stop()); ctx.close(); }};
     }
 
-    async function startRecording() {
+    // ---- Live transcription --------------------------------------------------------------------------
+    // Raw PCM from an AudioWorklet is resampled to 16 kHz and cut into chunks at pauses (3–15 s). Each chunk
+    // goes to the plugin server right away, which transcribes it with Voxtral and keeps the text, so the
+    // transcript is ready when the message is sent. Silent chunks are never sent (models invent text on silence).
+    const STT_RATE = 16000;
+    const FRAME = 320; // 20 ms at 16 kHz
+    // Cut at the first pause once a chunk has some length: 200 ms after 3 s, 120 ms after 8 s, always at 15 s.
+    // Text then shows up a few seconds behind the speaker instead of only at the end.
+    const MIN_CHUNK_S = 3;
+    const LONG_CHUNK_S = 8;
+    const MAX_CHUNK_S = 15;
+    const randomId = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => 'abcdefghijklmnopqrstuvwxyz0123456789'[b % 36]).join('');
+
+    function wavFromPcm16k(pcm) {
+        const out = new DataView(new ArrayBuffer(44 + pcm.length * 2));
+        const str = (o, s) => [...s].forEach((c, i) => out.setUint8(o + i, c.charCodeAt(0)));
+        str(0, 'RIFF'); out.setUint32(4, 36 + pcm.length * 2, true); str(8, 'WAVE'); str(12, 'fmt ');
+        out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true);
+        out.setUint32(24, STT_RATE, true); out.setUint32(28, STT_RATE * 2, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true);
+        str(36, 'data'); out.setUint32(40, pcm.length * 2, true);
+        for (let i = 0; i < pcm.length; i++) out.setInt16(44 + i * 2, Math.max(-1, Math.min(1, pcm[i])) * 0x7fff, true);
+        return new Blob([out], {type: 'audio/wav'});
+    }
+
+    class LiveTranscriber {
+        constructor(channelId, onUpdate) {
+            this.channelId = channelId; this.onUpdate = onUpdate; this.session = randomId();
+            this.seq = 0; this.texts = []; this.inflight = new Set(); this.abort = new AbortController();
+            this.parts = []; this.len = 0; this.frame = new Float32Array(FRAME); this.frameN = 0;
+            this.silentMs = 0; this.voicedFrames = 0; this.noise = 0.004; this.pos = 0; this.ended = false;
+        }
+
+        async attach(ctx, node) {
+            await ctx.audioWorklet.addModule(`/plugins/${PLUGIN_ID}/public/pcm-tap.js`);
+            const tap = new AudioWorkletNode(ctx, 'hu-pcm-tap');
+            const mute = ctx.createGain(); mute.gain.value = 0; // keeps the tap in the rendered graph, silently
+            node.connect(tap); tap.connect(mute); mute.connect(ctx.destination);
+            const ratio = ctx.sampleRate / STT_RATE;
+            tap.port.onmessage = (e) => this.push(e.data, ratio);
+        }
+
+        // Box-filter resample to 16 kHz, then voice-activity bookkeeping per 20 ms frame.
+        push(block, ratio) {
+            if (this.ended) return;
+            const out = [];
+            for (; this.pos < block.length; this.pos += ratio) {
+                const a = Math.floor(this.pos); const b = Math.min(block.length, Math.max(a + 1, Math.floor(this.pos + ratio)));
+                let s = 0; for (let i = a; i < b; i++) s += block[i];
+                out.push(s / (b - a));
+            }
+            this.pos -= block.length;
+            for (const v of out) {
+                this.frame[this.frameN++] = v;
+                if (this.frameN === FRAME) { this.onFrame(this.frame.slice(0)); this.frameN = 0; }
+            }
+        }
+
+        onFrame(f) {
+            let s = 0; for (let i = 0; i < f.length; i++) s += f[i] * f[i];
+            const rms = Math.sqrt(s / f.length);
+            const silent = rms < Math.max(0.008, this.noise * 2.5);
+            this.noise = silent ? this.noise * 0.95 + rms * 0.05 : this.noise * 1.002;
+            this.silentMs = silent ? this.silentMs + 20 : 0;
+            if (!silent) this.voicedFrames++;
+            this.parts.push(f); this.len += f.length;
+            const secs = this.len / STT_RATE;
+            const pauseMs = secs < LONG_CHUNK_S ? 200 : 120;
+            if ((secs >= MIN_CHUNK_S && this.silentMs >= pauseMs) || secs >= MAX_CHUNK_S) this.cut();
+        }
+
+        cut() {
+            const voiced = this.voicedFrames; const parts = this.parts;
+            this.parts = []; this.len = 0; this.voicedFrames = 0;
+            if (voiced < 10) return; // under 200 ms of sound: nothing worth transcribing
+            const pcm = new Float32Array(parts.reduce((n, p) => n + p.length, 0));
+            let o = 0; for (const p of parts) { pcm.set(p, o); o += p.length; }
+            this.send(this.seq++, wavFromPcm16k(pcm));
+        }
+
+        send(seq, wav, attempt = 1) {
+            this.texts[seq] = undefined;
+            const url = `/plugins/${PLUGIN_ID}/api/v1/stt/chunk?channel_id=${this.channelId}&session=${this.session}&seq=${seq}`;
+            const p = request(url, {method: 'POST', body: wav, headers: {'Content-Type': 'audio/wav'}, signal: this.abort.signal})
+                .then((res) => { this.texts[seq] = res.text || ''; })
+                .catch((e) => {
+                    if (this.abort.signal.aborted) return;
+                    if (attempt < 2) { this.inflight.delete(p); this.send(seq, wav, attempt + 1); return; }
+                    this.texts[seq] = null; log('stt.error', {seq, message: String(e)});
+                })
+                .finally(() => { this.inflight.delete(p); this.onUpdate(this.text()); });
+            this.inflight.add(p);
+            this.onUpdate(this.text());
+        }
+
+        text() {
+            const parts = this.texts.filter((t) => t);
+            return {text: parts.join(' '), pending: this.inflight.size > 0};
+        }
+
+        // Called when recording stops: the remaining audio becomes the last chunk.
+        end() { if (!this.ended) { this.ended = true; this.cut(); } }
+
+        async finish(timeoutMs = 15000) {
+            this.end();
+            const deadline = Date.now() + timeoutMs;
+            while (this.inflight.size && Date.now() < deadline) {
+                await Promise.race([Promise.allSettled([...this.inflight]), new Promise((r) => setTimeout(r, Math.max(0, deadline - Date.now())))]);
+            }
+            return {session: this.session, chunks: this.seq};
+        }
+
+        cancel() { this.ended = true; this.abort.abort(); }
+    }
+
+    async function startRecording(channelId, onText) {
         const source = await openSource();
         const analyser = source.ctx.createAnalyser(); analyser.fftSize = 1024;
         source.node.connect(analyser);
         const frame = new Float32Array(analyser.fftSize);
         const level = () => { analyser.getFloatTimeDomainData(frame); let s = 0; for (let i = 0; i < frame.length; i++) s += frame[i] * frame[i]; return Math.min(1, Math.sqrt(s / frame.length) * 5); };
+        let live = null;
+        if ((await pluginConfig()).transcription) {
+            live = new LiveTranscriber(channelId, onText);
+            try { await live.attach(source.ctx, source.node); } catch (e) { log('stt.attach.error', {message: String(e)}); live = null; }
+        }
         const mime = MIME_CANDIDATES.find((m) => MediaRecorder.isTypeSupported(m)) || '';
         const recorder = new MediaRecorder(source.stream, {mimeType: mime, audioBitsPerSecond: 64000});
         const chunks = [];
@@ -47,9 +169,15 @@
         const stopped = new Promise((resolve) => { recorder.onstop = () => resolve(new Blob(chunks, {type: recorder.mimeType})); });
         recorder.start(250);
         const startedAt = performance.now();
-        log('rec.start', {mime: recorder.mimeType});
-        return {mime: recorder.mimeType, startedAt, level,
-            stop: async () => { if (recorder.state !== 'inactive') recorder.stop(); const blob = await stopped; source.close(); return {blob, ms: performance.now() - startedAt}; }};
+        log('rec.start', {mime: recorder.mimeType, live: !!live});
+        return {mime: recorder.mimeType, startedAt, level, live,
+            stop: async () => {
+                if (recorder.state !== 'inactive') recorder.stop();
+                const blob = await stopped;
+                if (live) live.end();
+                source.close();
+                return {blob, ms: performance.now() - startedAt};
+            }};
     }
 
     const decodeAudio = async (arrayBuffer) => {
@@ -73,39 +201,20 @@
         return out.map((v) => Math.round(Math.pow(v / max, 0.7) * 100));
     }
 
-    // Resample decoded audio to 16 kHz mono 16-bit PCM WAV (what Voxtral on Bedrock accepts).
-    async function toWav16k(decoded) {
-        const off = new OfflineAudioContext(1, Math.ceil(decoded.duration * 16000), 16000);
-        const src = off.createBufferSource(); src.buffer = decoded; src.connect(off.destination); src.start();
-        const pcm = (await off.startRendering()).getChannelData(0);
-        const out = new DataView(new ArrayBuffer(44 + pcm.length * 2));
-        const str = (o, s) => [...s].forEach((c, i) => out.setUint8(o + i, c.charCodeAt(0)));
-        str(0, 'RIFF'); out.setUint32(4, 36 + pcm.length * 2, true); str(8, 'WAVE'); str(12, 'fmt ');
-        out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true);
-        out.setUint32(24, 16000, true); out.setUint32(28, 32000, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true);
-        str(36, 'data'); out.setUint32(40, pcm.length * 2, true);
-        for (let i = 0; i < pcm.length; i++) out.setInt16(44 + i * 2, Math.max(-1, Math.min(1, pcm[i])) * 0x7fff, true);
-        return new Blob([out], {type: 'audio/wav'});
-    }
-
-    async function sendVoice(blob, ms, mime, draft) {
+    // Upload the audio as the user (normal files API), wait for the live transcript, then let the server
+    // create the post with the transcript already in it.
+    async function sendVoice(blob, ms, mime, draft, live) {
         const t0 = performance.now();
-        // The 16 kHz WAV is for transcription only. It stays in memory (window.__humm.lastWav) until the
-        // plugin server exists; it is never attached to the post, so a voice message carries one file.
-        const decoded = await decodeAudio(await blob.arrayBuffer());
-        const wav = await toWav16k(decoded);
-        const peaks = computePeaks(decoded);
-        S.lastWav = wav;
-        const ts = Date.now();
+        let peaks = [];
+        try { peaks = computePeaks(await decodeAudio(await blob.arrayBuffer())); } catch (e) { log('peaks.error', {message: String(e)}); }
         const fd = new FormData();
         fd.append('channel_id', draft.channelId);
-        fd.append('files', new File([blob], `voice-${ts}.m4a`, {type: mime}));
-        const up = await api('/files', {method: 'POST', body: fd});
-        const post = await api('/posts', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
-            channel_id: draft.channelId, root_id: draft.rootId || '', type: 'custom_hu_voice',
-            message: `🎤 Sprachnachricht (${fmt(ms)})`, file_ids: up.file_infos.map((f) => f.id),
-            props: {hu_voice: {duration_ms: Math.round(ms), mime, peaks, spike: true}}})});
-        S.last = {postId: post.id, fileIds: up.file_infos.map((f) => f.id), m4aBytes: blob.size, wavBytes: wav.size, ms, mime, sendMs: performance.now() - t0};
+        fd.append('files', new File([blob], `voice-${Date.now()}.${mime.includes('webm') ? 'webm' : 'm4a'}`, {type: mime.split(';')[0]}));
+        const [up, stt] = await Promise.all([api('/files', {method: 'POST', body: fd}), live ? live.finish() : Promise.resolve({session: '', chunks: 0})]);
+        const res = await pluginApi('/api/v1/voice', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+            channel_id: draft.channelId, root_id: draft.rootId || '', file_id: up.file_infos[0].id,
+            duration_ms: Math.round(ms), peaks, session: stt.session, chunks: stt.chunks})});
+        S.last = {postId: res.post_id, transcript: res.transcript_status, chunks: stt.chunks, bytes: blob.size, ms, sendMs: Math.round(performance.now() - t0)};
         log('sent', S.last);
     }
 
@@ -240,11 +349,15 @@
         const [elapsed, setElapsed] = React.useState(0);
         const [levels, setLevels] = React.useState([]);
         const [btnEl, setBtnEl] = React.useState(null);
+        const [live, setLive] = React.useState({text: '', pending: false});
+        const [liveEnabled, setLiveEnabled] = React.useState(false);
         const modeRef = React.useRef('idle');
         const recRef = React.useRef(null);
         const originRef = React.useRef(null);
         const previewRef = React.useRef(null);
         const setMode = (m) => { modeRef.current = m; setModeState(m); log('mode', {m}); };
+        const flash = (m) => { setMode(m); setTimeout(() => modeRef.current === m && setMode('idle'), 1800); };
+        const resetLive = () => { setLive({text: '', pending: false}); setLiveEnabled(false); };
         const active = mode !== 'idle';
         const editorEl = btnEl && btnEl.closest('.AdvancedTextEditor__body');
         const editorRect = useRect(editorEl, active && mode !== 'hint');
@@ -266,25 +379,33 @@
             return () => cancelAnimationFrame(raf);
         }, [mode]);
 
-        const discard = async () => { const p = recRef.current; recRef.current = null; setMode('idle'); setLevels([]); const r = p && await p.catch(() => null); if (r) await r.stop(); };
+        const discard = async () => {
+            const p = recRef.current; recRef.current = null; setMode('idle'); setLevels([]); resetLive();
+            const r = p && await p.catch(() => null);
+            if (r) { if (r.live) r.live.cancel(); await r.stop(); }
+        };
+        const send = async (blob, ms, mime, liveT) => {
+            setMode('sending');
+            try { await sendVoice(blob, ms, mime, props.draft, liveT); setMode('idle'); } catch (e) { log('send.error', {message: String(e)}); flash('error'); }
+            resetLive();
+        };
         const stopAndSend = async () => {
             const r = await recRef.current; recRef.current = null;
             const {blob, ms} = await r.stop();
             setLevels([]);
-            if (ms < MIN_MS) { setMode('hint'); setTimeout(() => modeRef.current === 'hint' && setMode('idle'), 1500); return; }
-            setMode('idle');
-            await sendVoice(blob, ms, r.mime, props.draft).catch((e) => log('send.error', {message: String(e)}));
+            if (ms < MIN_MS) { if (r.live) r.live.cancel(); resetLive(); flash('hint'); return; }
+            await send(blob, ms, r.mime, r.live);
         };
         const stopToPreview = async () => {
             const r = await recRef.current; recRef.current = null;
             const res = await r.stop();
             let peaks = null;
             try { peaks = computePeaks(await decodeAudio(await res.blob.arrayBuffer())); } catch (e) { log('peaks.error', {message: String(e)}); }
-            previewRef.current = {...res, mime: r.mime, url: URL.createObjectURL(res.blob), peaks};
+            previewRef.current = {...res, mime: r.mime, url: URL.createObjectURL(res.blob), peaks, live: r.live};
             setLevels([]); setMode('preview');
         };
-        const sendPreview = async () => { const p = previewRef.current; setMode('idle'); URL.revokeObjectURL(p.url); await sendVoice(p.blob, p.ms, p.mime, props.draft).catch((e) => log('send.error', {message: String(e)})); };
-        const discardPreview = () => { const p = previewRef.current; if (p) URL.revokeObjectURL(p.url); previewRef.current = null; setMode('idle'); };
+        const sendPreview = async () => { const p = previewRef.current; previewRef.current = null; URL.revokeObjectURL(p.url); await send(p.blob, p.ms, p.mime, p.live); };
+        const discardPreview = () => { const p = previewRef.current; if (p) { URL.revokeObjectURL(p.url); if (p.live) p.live.cancel(); } previewRef.current = null; resetLive(); setMode('idle'); };
 
         // Esc cancels, Enter sends, while locked or previewing.
         React.useEffect(() => {
@@ -299,12 +420,12 @@
         }, [mode]);
 
         const onPointerDown = (e) => {
-            if (modeRef.current !== 'idle' && modeRef.current !== 'hint') return;
+            if (!['idle', 'hint', 'error'].includes(modeRef.current)) return;
             e.preventDefault();
             try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
             originRef.current = {x: e.clientX, y: e.clientY};
-            recRef.current = startRecording();
-            recRef.current.catch((err) => { log('rec.error', {message: String(err)}); recRef.current = null; setMode('idle'); });
+            recRef.current = startRecording(props.draft.channelId, setLive);
+            recRef.current.then((r) => setLiveEnabled(!!r.live), (err) => { log('rec.error', {message: String(err)}); recRef.current = null; setMode('idle'); });
             setElapsed(0); setLevels([]);
             setMode('recording');
         };
@@ -346,11 +467,21 @@
         const holding = mode === 'recording' || mode === 'cancel';
         const orbPad = holding && micRect && editorRect ? Math.max(12, Math.round(editorRect.left + editorRect.width - (micRect.left + micRect.width / 2 - 36))) : 12;
         if (bar && editorRect) {
+            // Live transcript above the controls; newest words at the bottom, older lines scroll out at the top.
+            const showText = liveEnabled && (mode === 'recording' || mode === 'locked' || mode === 'preview');
+            const textHeight = editorRect.height >= 86 ? 36 : 18;
+            let placeholder = 'Transkript erscheint beim Sprechen …';
+            if (live.pending && !live.text) placeholder = 'Wird transkribiert …';
+            else if (mode === 'preview' && !live.text) placeholder = 'Kein Transkript';
+            const textRow = showText && h('div', {key: 'txt', 'data-humm': 'live-text', 'aria-live': 'polite', style: {height: textHeight, overflow: 'hidden', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end',
+                fontSize: 13, lineHeight: '18px', color: live.text ? 'var(--center-channel-color)' : muted, fontStyle: live.text ? 'normal' : 'italic'}},
+            h('div', null, live.text || placeholder, live.text && live.pending ? h('span', {style: {color: muted}}, ' …') : null));
             overlays.push(h('div', {key: 'bar', 'data-humm': 'recorder', 'data-humm-mode-bar': mode, style: {position: 'fixed', zIndex: 1000,
                 left: editorRect.left, top: editorRect.top, width: editorRect.width, height: editorRect.height, boxSizing: 'border-box',
-                display: 'flex', alignItems: 'center', gap: 12, padding: `0 ${orbPad}px 0 12px`, borderRadius: 4,
+                display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 4, padding: `6px ${orbPad}px 6px 12px`, borderRadius: 4,
                 background: 'var(--center-channel-bg)', border: '1px solid rgba(var(--center-channel-color-rgb), 0.16)',
-                boxShadow: '0 2px 6px rgba(0, 0, 0, 0.08)', pointerEvents: mode === 'locked' || mode === 'preview' ? 'auto' : 'none'}}, bar));
+                boxShadow: '0 2px 6px rgba(0, 0, 0, 0.08)', pointerEvents: mode === 'locked' || mode === 'preview' ? 'auto' : 'none'}},
+            textRow, h('div', {key: 'ctl', style: {display: 'flex', alignItems: 'center', gap: 12, minWidth: 0}}, bar)));
         }
         if ((mode === 'recording' || mode === 'cancel') && micRect) {
             const cx = micRect.left + micRect.width / 2; const cy = micRect.top + micRect.height / 2;
@@ -364,15 +495,17 @@
                 icon('lock', 16), h('span', {'data-humm-anim': 'rise', style: {animation: 'humm-rise 1.2s ease-in-out infinite'}}, icon('chevU', 16))));
             }
         }
-        if (mode === 'hint' && micRect) {
+        if ((mode === 'hint' || mode === 'error') && micRect) {
             overlays.push(h('div', {key: 'hint', 'data-humm': 'hold-hint', style: {position: 'fixed', zIndex: 1001, pointerEvents: 'none', left: micRect.left + micRect.width / 2, top: micRect.top - 8,
                 transform: 'translate(-50%, -100%)', whiteSpace: 'nowrap', fontSize: 12, padding: '4px 8px', borderRadius: 4,
-                background: 'var(--center-channel-color)', color: 'var(--center-channel-bg)'}}, 'Zum Aufnehmen gedrückt halten'));
+                background: mode === 'error' ? RED : 'var(--center-channel-color)', color: mode === 'error' ? '#fff' : 'var(--center-channel-bg)'}},
+            mode === 'error' ? 'Senden fehlgeschlagen' : 'Zum Aufnehmen gedrückt halten'));
         }
 
         return h('span', {style: {display: 'inline-flex', alignItems: 'center'}, 'data-humm-mode': mode},
             h('button', {type: 'button', ref: setBtnEl, className: 'humm-mic', 'aria-label': 'Sprachnachricht aufnehmen (gedrückt halten)', title: 'Gedrückt halten zum Aufnehmen', 'data-humm': 'mic',
-                onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp}, icon('mic', 18)),
+                disabled: mode === 'sending', onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp},
+            mode === 'sending' ? h('span', {'data-humm-anim': 'spin', 'aria-label': 'Wird gesendet', style: {width: 14, height: 14, borderRadius: '50%', border: '2px solid currentColor', borderTopColor: 'transparent', animation: 'humm-spin 0.8s linear infinite'}}) : icon('mic', 18)),
             overlays.length ? window.ReactDOM.createPortal(overlays, document.body) : null);
     }
 
@@ -499,6 +632,7 @@
         '.humm-mic:hover { background: rgba(var(--center-channel-color-rgb), 0.08); color: rgba(var(--center-channel-color-rgb), 0.72); }',
         '@keyframes humm-pulse { 0% { box-shadow: 0 0 0 0 rgba(210, 75, 78, 0.45); transform: scale(1); } 70% { box-shadow: 0 0 0 14px rgba(210, 75, 78, 0); transform: scale(1.06); } 100% { box-shadow: 0 0 0 0 rgba(210, 75, 78, 0); transform: scale(1); } }',
         '@keyframes humm-blink { 50% { opacity: 0.2; } }',
+        '@keyframes humm-spin { to { transform: rotate(360deg); } }',
         '@keyframes humm-nudge { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(-4px); } }',
         '@keyframes humm-rise { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }',
         '@media (prefers-reduced-motion: reduce) { [data-humm-anim] { animation: none !important; } }',

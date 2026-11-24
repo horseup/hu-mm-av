@@ -1,0 +1,70 @@
+{
+  "id": "de.horseup.mm-av",
+  "name": "Voice messages",
+  "description": "Telegram-style voice messages: hold to record, release to send, with automatic transcripts.",
+  "homepage_url": "https://github.com/horseup/hu-mm-av",
+  "support_url": "https://github.com/horseup/hu-mm-av/issues",
+  "icon_path": "assets/icon.svg",
+  "version": "0.1.0",
+  "min_server_version": "10.0.0",
+  "server": {
+    "executables": {
+      "linux-amd64": "server/dist/plugin-linux-amd64",
+      "linux-arm64": "server/dist/plugin-linux-arm64"
+    }
+  },
+  "webapp": {
+    "bundle_path": "webapp/main.js"
+  },
+  "settings_schema": {
+    "header": "Speech-to-text runs on Amazon Bedrock (Voxtral). Leave the AWS keys empty to use the AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN environment variables of the Mattermost server. Grant the key bedrock:InvokeModel on the model only.",
+    "settings": [
+      {
+        "key": "EnableTranscription",
+        "display_name": "Transcribe voice messages",
+        "type": "bool",
+        "default": true,
+        "help_text": "Transcribes while recording and writes the transcript into the message, so mobile users see it too."
+      },
+      {
+        "key": "AWSRegion",
+        "display_name": "AWS region",
+        "type": "text",
+        "default": "eu-west-1",
+        "help_text": "Bedrock region that serves the model. Voxtral works in eu-west-1 (Ireland)."
+      },
+      {
+        "key": "BedrockModelID",
+        "display_name": "Model ID",
+        "type": "text",
+        "default": "mistral.voxtral-mini-3b-2507"
+      },
+      {
+        "key": "AWSAccessKeyID",
+        "display_name": "AWS access key ID",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "AWSSecretAccessKey",
+        "display_name": "AWS secret access key",
+        "type": "text",
+        "secret": true,
+        "default": ""
+      },
+      {
+        "key": "LanguageHint",
+        "display_name": "Most likely language",
+        "type": "text",
+        "default": "German",
+        "help_text": "Helps the model with short clips. It still transcribes other languages as spoken and never translates. Leave empty for no hint."
+      },
+      {
+        "key": "MaxDurationSeconds",
+        "display_name": "Maximum length (seconds)",
+        "type": "number",
+        "default": 300
+      }
+    ]
+  }
+}
