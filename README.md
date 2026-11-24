@@ -8,7 +8,7 @@ Telegram-style voice messages for [Mattermost](https://mattermost.com): hold the
 
 - Desktop app and web: press and hold the mic in the composer to record, then release to send. Slide away to cancel, or drag up to lock for hands-free recording. In locked mode you can listen back before sending, and a keyboard shortcut also records.
 - Voice messages are recorded as AAC (`.m4a`) by the browser's own encoder, so the plugin ships no encoder and the files play everywhere, including the Mattermost mobile apps.
-- Transcripts are written into the message text, so mobile users see them too. The speech-to-text provider is configurable: AWS (Amazon Transcribe, Bedrock) or an OpenAI-compatible endpoint.
+- Transcripts are written into the message text, so mobile users see them too. Speech-to-text defaults to Voxtral on Amazon Bedrock; an OpenAI-compatible endpoint can be configured instead.
 - Mobile apps can play messages but not record them: Mattermost mobile does not run plugin UI.
 
 ## Development

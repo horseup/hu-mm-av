@@ -4,18 +4,20 @@ Tested on a local Mattermost 11.7.11 Team Edition (`dev/docker-compose.yml`), wi
 
 ## Verdict
 
-v1 is feasible as scoped, with three design changes:
+v1 looks feasible as scoped. Three checks are still pending: a real microphone in Mattermost Desktop, real voices, and the real mobile apps (see "Still open"). Design changes:
 
-1. Speech-to-text is **Voxtral Mini 3B on Amazon Bedrock in eu-west-1 (Ireland)**, through the Converse API.
-2. Transcription audio is **16 kHz mono WAV built from raw PCM captured while recording**, not decoded from the AAC.
-3. Long messages are split into **chunks of about 30 s, transcribed in parallel**.
+1. Speech-to-text is **Voxtral Mini 3B on Amazon Bedrock in eu-west-1 (Ireland)**, through the Converse API. Mini was preferred over Small on one clip only.
+2. Transcription audio is **16 kHz mono WAV** (Voxtral accepts only wav or mp3). Capturing raw PCM while recording is the plan, but its accuracy benefit is not proven: errors showed up on direct WAVs too.
+3. Long messages are split into **chunks of about 30 s, transcribed in parallel**. That keeps requests under the size limit and holds latency at 1–3 s. It does not prevent dropped repeats.
+
+Recording ran in the Claude desktop app's built-in Chromium 156 browser on macOS, with a TTS file fed in as the source. Mattermost Desktop uses the same Chromium major version, but the microphone path itself never ran.
 
 ## Results
 
 | Check | Result |
 | --- | --- |
 | Composer slot | `registerPostEditorActionComponent` renders inside the formatting bar. If a user collapses the bar ("Aa" toggle), the mic disappears. |
-| Gestures (synthetic pointer events in Chromium) | Tap under 500 ms shows a "hold to record" hint. Hold and release sends. Slide left discards. Drag up locks; then listen back and send. All work. |
+| Gestures (Chromium) | With synthetic pointer events: a tap under 500 ms shows a "hold to record" hint, hold and release sends, slide left discards, and drag up locks, then you can listen back and send. Real mouse drags confirmed slide-to-cancel and drag-to-lock once the pointer leaves the button. |
 | Recording format | Mattermost Desktop 6.4.0 runs Electron 45.2.1 / Chromium 156, which records `audio/mp4;codecs=mp4a.40.2` natively. Output is fragmented MP4 (AAC, 64 kbps), and ffprobe reads its duration: 17 s = 126 KB. |
 | Send path | Decode, build the WAV, upload two files and create the `custom_hu_voice` post: 97 ms. |
 | iOS playback | iOS 27.2 Simulator Safari (AVFoundation) loads the browser-recorded fMP4, shows the right duration (16.34 s) and plays it. The Mattermost mobile app itself was not tested. |
@@ -33,8 +35,9 @@ v1 is feasible as scoped, with three design changes:
 | Voxtral Mini, 16 s clip | 1.2 s round trip, essentially verbatim ("3,5 kg", "14:30 Uhr") |
 | Voxtral Small, same clip | 2.2 s, and it paraphrased ("kurze Info" for "kurzes Update", "der Hufschmied" for "die Hufschmiedin"). Not better here. |
 | Voxtral Mini, 54 s clip | 2.8 s. Errors: "lammet" (lahmt), "Pferden" (Verden), "Ecke" (App). Numbers and times were right. |
-| Voxtral Mini, WAV decoded from the Chromium AAC | Worse ("kurzes App", "Hofschmiedin"). This is why v1 captures raw PCM for STT. |
-| Repeated audio | A clip that repeats the same sentence seven times came back as one sentence. The model drops repeats, which is one more reason for chunks. |
+| Voxtral Mini, WAV decoded from the Chromium AAC | "kurzes App" and "Hofschmiedin". A later run on the direct WAV also got "Appointement" and "Hofschmiedin", so output varies between runs at temperature 0. AAC is not shown to be the cause. |
+| Repeated audio | A clip that repeats the same sentence came back as one sentence, both at 115 s and inside a 30 s chunk. The model silently drops repeats, and chunking does not prevent it. |
+| Bedrock data handling | Content is not shared with model providers. Retention mode `none` (zero data retention) can be set per account or project through the API. Training use and in-region processing are not stated on the current pages. Set `none` and check Voxtral's `allowed_modes` before production. |
 
 Tokens: about 375 input tokens per 30 s audio window (about 750 per minute), plus about 35 for the prompt. Output is about 4.4 tokens per second of speech.
 
@@ -48,7 +51,8 @@ Voxtral Mini 3B standard: $0.00005 per 1K input tokens and $0.00005 per 1K outpu
 
 ## Still open
 
-- Real human speech, recorded with a microphone in Mattermost Desktop. TTS is cleaner than real voices.
+- Real human speech, recorded with a microphone in Mattermost Desktop. TTS is cleaner than real voices, and the microphone permission flow was never exercised.
+- Silent omissions: flag transcripts that are unusually short for their audio length.
 - Playback in the Mattermost mobile apps on a real phone. The test server is local only.
 - The composer slot hides with the formatting bar. Options: accept it and rely on the keyboard shortcut, or mount next to the send button through the DOM (undocumented, so it may break on upgrades).
 - Edited marker: show the "Edited" label once the transcript lands, or create the post only after transcription (about 1–3 s of delay).

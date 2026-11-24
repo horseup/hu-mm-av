@@ -50,51 +50,27 @@ Status: spike done 2026-11-24, see [SPIKE.md](SPIKE.md). Developed and tested ag
 
 | Phase | Work | Estimate |
 | --- | --- | --- |
-| Spike | See the checklist below | 1–2 days |
+| Spike | Done 2026-11-24, see [SPIKE.md](SPIKE.md) | 1 day |
 | v1 voice | Recorder and all four gestures, upload and post, player, transcription, System Console settings, de/en strings, tests | 4–5 days |
-| v1 release | Final iOS and Android regression check, GitHub Actions release tarball, README for other admins | 1 day |
+| v1 release | iOS and Android check in the real Mattermost apps, GitHub Actions release tarball, README for other admins | 1 day |
 | Phase 2 | Round video: front camera, square crop, circle player, MP4 (H.264 + AAC) | 3–5 days |
-
-Spike checklist. Everything v1 depends on, tested before any v1 code:
-
-1. Run local Mattermost 11.7.11 in Docker.
-2. Check where `registerPostEditorActionComponent` mounts on 11.7.11 (`webapp/channels/src/components/advanced_text_editor/use_plugin_items.tsx`). Use a stub button to prove that hold, drag-out to cancel and drag-up to lock all work in that slot.
-3. Record one real `.m4a` with `MediaRecorder` inside Mattermost Desktop, not a clean WAV. Feed that file to:
-   - Amazon Transcribe (synchronous API),
-   - Bedrock Voxtral through the `mantle` endpoint (the only one with Frankfurt prices) and through Converse,
-   - the iOS and Android apps for playback.
-   If any of them rejects the file, we need ffmpeg on the server, which is an infra change.
-4. Use fictional speech only. Compare German accuracy (numbers, names, horse terms) and the time until the transcript is back.
-5. Check whether a plugin `UpdatePost` marks the post as edited.
-
-The spike needs an AWS account in eu-central-1 with an IAM principal limited to the transcription actions and `bedrock:InvokeModel` on Voxtral, Voxtral model access, and the AI services opt-out policy attached before Transcribe is used.
 
 ## Costs
 
-200 voice messages of about 2 minutes each come to 400 audio minutes a month. Prices are eu-central-1 list prices from the AWS Price List API (offer version 2026-11-23).
+200 voice messages of about 2 minutes each come to 400 audio minutes a month. With Voxtral Mini 3B on Bedrock eu-west-1, measured token counts and list prices from the AWS Price List API put that at **about $0.02 a month**. [SPIKE.md](SPIKE.md) has the breakdown.
 
-| Option | Unit price | Per month |
-| --- | --- | --- |
-| Amazon Transcribe, batch | $0.0001/s ($0.006/min) | $2.40 |
-| Amazon Transcribe, synchronous | $0.000116667/s ($0.007/min) | $2.80 |
-| Amazon Transcribe, streaming | $0.0001667/s ($0.010/min) | $4.00 |
-| Bedrock Voxtral Small 24B, standard | $0.00012 per 1K input tokens, $0.00036 per 1K output tokens | about $0.10* |
-| Bedrock Voxtral Mini 3B, standard | $0.000048 per 1K tokens, input and output | about $0.03* |
-| EC2 with self-hosted Whisper | Runs all the time | Tens of dollars; rejected |
-
-\* Assumes about 750 audio tokens per minute (12.5 Hz audio frames) and about 600 output tokens per message. Measure in the spike. Even at four times that, it stays under $0.50 a month.
-
-Transcribe bills per second with a 15-second minimum per request. Every option is under $5 a month at that volume.
+The pre-spike comparison was Amazon Transcribe ($2.40–4.00 a month) and Voxtral Small (about $0.10). EC2 with self-hosted Whisper was rejected because it runs all the time.
 
 ## Open questions and risks
 
-- Transcribe data use: without the AWS Organizations AI services opt-out, voice inputs may be stored outside the region for service improvement ([AWS docs](https://docs.aws.amazon.com/transcribe/latest/dg/opt-out.html)). Bedrock does not use inputs for training; check that this also holds for the `mantle` endpoint.
-- Mattermost Desktop's Chromium may differ from the Chromium 156 used to check the formats.
-- Firefox cannot record MP4, so it falls back to WebM/Opus, which the iOS app may not play. Options: accept it, block recording in Firefox, or transcode on the server.
-- Bedrock lists and prices Voxtral in Frankfurt, but users report "Model does not support audio modality" errors in other regions. The spike decides.
-- If a plugin `UpdatePost` marks the post as edited, either accept that or create the post only after transcription, which adds a short delay.
-- Where the AWS credentials live: plugin settings in the Mattermost config, or environment variables on the host. Use an IAM user scoped to the speech-to-text action only. Decide before the production install.
-- Webapp plugin APIs can change between major versions, as when the original voice plugin broke at 10.x. Use only documented registry methods and run CI against the latest Mattermost.
+- **Bedrock data retention.** Bedrock does not share content with model providers. Retention mode `none` (zero data retention) can be set per account or per project through the API; there is no console setting. Check `allowed_modes` for Voxtral and set `none` before production ([data retention](https://docs.aws.amazon.com/bedrock/latest/userguide/data-retention.html), [data protection](https://docs.aws.amazon.com/bedrock/latest/userguide/data-protection.html)).
+- **Silent omissions.** Voxtral drops repeated content, even inside a 30 s chunk. Flag a transcript that is unusually short for its audio length instead of trusting it.
+- **Accuracy varies between runs** at temperature 0, and every test so far used TTS. Real voices need testing.
+- **Composer slot.** The mic sits in the formatting bar and disappears when a user collapses it.
+- **Firefox** cannot record MP4, so it falls back to WebM/Opus, which the iOS app may not play. Options: accept it, block recording in Firefox, or transcode on the server.
+- **Edited marker.** Writing the transcript into the message marks the post "Edited". The alternative is to create the post only after transcription, about 1–3 s later.
+- **AWS credentials.** They live either in plugin settings in the Mattermost config or in environment variables on the host. Use an IAM user scoped to `bedrock:InvokeModel` on Voxtral. Decide before the production install.
+- **Plugin API drift.** Webapp plugin APIs can change between major versions, as when the original voice plugin broke at 10.x. Use only documented registry methods and run CI against the latest Mattermost.
 
 ## Sources
 
@@ -109,4 +85,4 @@ Transcribe bills per second with a 15-second minimum per request. Every option i
 - [gluckdev/MattermostVoiceClips](https://github.com/gluckdev/MattermostVoiceClips)
 - [BerziOnline/mattermost-plugin-mediaforge](https://github.com/BerziOnline/mattermost-plugin-mediaforge)
 - [Bedrock Voxtral Small model card](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-mistral-ai-voxtral-small-24b-2507.html), [re:Post audio modality report](https://repost.aws/questions/QUvp_Dp2giQ3aBO8nS8uG1Fg/voxtral-model-error-when-processing-audio-for-eu-west-1)
-- AWS Price List API: `offers/v1.0/aws/transcribe/current/eu-central-1/index.json`, `offers/v1.0/aws/AmazonBedrock/current/eu-central-1/index.json`
+- AWS Price List API: `offers/v1.0/aws/AmazonBedrock/current/eu-west-1/index.json` (and `transcribe`/`eu-central-1` for the pre-spike comparison)
