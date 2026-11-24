@@ -52,9 +52,29 @@
             stop: async () => { if (recorder.state !== 'inactive') recorder.stop(); const blob = await stopped; source.close(); return {blob, ms: performance.now() - startedAt}; }};
     }
 
-    // Decode the recording and resample to 16 kHz mono 16-bit PCM WAV (what Voxtral on Bedrock accepts).
-    async function toWav16k(blob) {
-        const decoded = await new AudioContext().decodeAudioData(await blob.arrayBuffer());
+    const decodeAudio = async (arrayBuffer) => {
+        const ctx = new AudioContext();
+        try { return await ctx.decodeAudioData(arrayBuffer); } finally { ctx.close(); }
+    };
+
+    // Waveform: loudness per bar (0–100), RMS per bucket scaled to the loudest bar, with a gentle curve so
+    // quiet speech still shows. Stored in props.hu_voice.peaks at send time; computed on demand otherwise.
+    const PEAK_BARS = 48;
+    function computePeaks(buffer, n = PEAK_BARS) {
+        const ch = buffer.getChannelData(0);
+        const size = Math.max(1, Math.floor(ch.length / n));
+        const out = [];
+        for (let b = 0; b < n; b++) {
+            const start = b * size; const end = Math.min(ch.length, start + size);
+            let s = 0; for (let i = start; i < end; i++) s += ch[i] * ch[i];
+            out.push(Math.sqrt(s / Math.max(1, end - start)));
+        }
+        const max = Math.max(...out, 1e-6);
+        return out.map((v) => Math.round(Math.pow(v / max, 0.7) * 100));
+    }
+
+    // Resample decoded audio to 16 kHz mono 16-bit PCM WAV (what Voxtral on Bedrock accepts).
+    async function toWav16k(decoded) {
         const off = new OfflineAudioContext(1, Math.ceil(decoded.duration * 16000), 16000);
         const src = off.createBufferSource(); src.buffer = decoded; src.connect(off.destination); src.start();
         const pcm = (await off.startRendering()).getChannelData(0);
@@ -72,7 +92,9 @@
         const t0 = performance.now();
         // The 16 kHz WAV is for transcription only. It stays in memory (window.__humm.lastWav) until the
         // plugin server exists; it is never attached to the post, so a voice message carries one file.
-        const wav = await toWav16k(blob);
+        const decoded = await decodeAudio(await blob.arrayBuffer());
+        const wav = await toWav16k(decoded);
+        const peaks = computePeaks(decoded);
         S.lastWav = wav;
         const ts = Date.now();
         const fd = new FormData();
@@ -82,7 +104,7 @@
         const post = await api('/posts', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
             channel_id: draft.channelId, root_id: draft.rootId || '', type: 'custom_hu_voice',
             message: `🎤 Sprachnachricht (${fmt(ms)})`, file_ids: up.file_infos.map((f) => f.id),
-            props: {hu_voice: {duration_ms: Math.round(ms), mime, spike: true}}})});
+            props: {hu_voice: {duration_ms: Math.round(ms), mime, peaks, spike: true}}})});
         S.last = {postId: post.id, fileIds: up.file_infos.map((f) => f.id), m4aBytes: blob.size, wavBytes: wav.size, ms, mime, sendMs: performance.now() - t0};
         log('sent', S.last);
     }
@@ -137,7 +159,31 @@
             h('span', {'data-humm-anim': 'blink', style: {width: 8, height: 8, borderRadius: '50%', background: RED, animation: blink ? 'humm-blink 1s ease-in-out infinite' : 'none'}}), fmt(ms));
     }
 
-    function PreviewPlayer({url, ms}) {
+    // Bars fill with the accent colour as playback passes them; clicking a bar seeks there.
+    function Waveform({peaks, progress, onSeek, height = 28}) {
+        const loading = !(peaks && peaks.length);
+        const bars = loading ? new Array(PEAK_BARS).fill(14) : peaks;
+        const n = bars.length;
+        const seek = (e) => { if (!onSeek) return; const r = e.currentTarget.getBoundingClientRect(); onSeek(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))); };
+        return h('div', {'data-humm': 'seek', role: 'slider', 'aria-label': 'Position', 'aria-valuemin': 0, 'aria-valuemax': 100,
+            'aria-valuenow': Math.round(progress * 100), onClick: seek,
+            style: {flex: 'none', width: n * 5 - 2, height, display: 'flex', alignItems: 'center', gap: 2, cursor: onSeek ? 'pointer' : 'default', opacity: loading ? 0.5 : 1}},
+        bars.map((v, i) => h('div', {key: i, style: {width: 3, flex: 'none', borderRadius: 2, height: Math.max(3, Math.round((v / 100) * height)),
+            background: (i + 0.5) / n <= progress ? 'var(--button-bg)' : 'rgba(var(--center-channel-color-rgb), 0.24)'}})));
+    }
+
+    // Smooth progress while playing (timeupdate alone fires only about 4 times a second).
+    function usePlaybackPosition(audioRef, playing, setPos) {
+        React.useEffect(() => {
+            if (!playing) return undefined;
+            let raf = 0;
+            const tick = () => { if (audioRef.current) setPos(audioRef.current.currentTime); raf = requestAnimationFrame(tick); };
+            raf = requestAnimationFrame(tick);
+            return () => cancelAnimationFrame(raf);
+        }, [playing]);
+    }
+
+    function PreviewPlayer({url, ms, peaks}) {
         const ref = React.useRef(null);
         const [playing, setPlaying] = React.useState(false);
         const [pos, setPos] = React.useState(0);
@@ -147,13 +193,14 @@
             Object.entries(on).forEach(([k, fn]) => a.addEventListener(k, fn));
             return () => { a.pause(); Object.entries(on).forEach(([k, fn]) => a.removeEventListener(k, fn)); };
         }, [url]);
+        usePlaybackPosition(ref, playing, setPos);
         const dur = ms / 1000;
         const toggle = () => { const a = ref.current; if (a.paused) a.play(); else a.pause(); };
+        const onSeek = (ratio) => { ref.current.currentTime = ratio * dur; setPos(ratio * dur); };
         return h('div', {style: {flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 10}},
             h('audio', {ref, src: url, preload: 'auto'}),
             h('button', {type: 'button', 'data-humm': 'preview-play', 'aria-label': playing ? 'Pause' : 'Anhören', onClick: toggle, style: circleBtn('rgba(var(--center-channel-color-rgb), 0.08)', 'var(--center-channel-color)')}, icon(playing ? 'pause' : 'play', 16)),
-            h('div', {style: {flex: 1, height: 4, borderRadius: 2, background: 'rgba(var(--center-channel-color-rgb), 0.16)', position: 'relative'}},
-                h('div', {style: {position: 'absolute', left: 0, top: 0, bottom: 0, borderRadius: 2, background: 'var(--button-bg)', width: `${dur ? Math.min(100, (pos / dur) * 100) : 0}%`}})),
+            h(Waveform, {peaks, progress: dur ? Math.min(1, pos / dur) : 0, onSeek}),
             h('span', {style: {fontSize: 12, color: muted, fontVariantNumeric: 'tabular-nums', flex: 'none'}}, fmt((playing || pos > 0 ? pos : dur) * 1000)));
     }
 
@@ -179,7 +226,7 @@
             if (recRef.current) recRef.current.then((r) => { rec = r; }).catch(() => {});
             const tick = () => {
                 if (rec && frameNo++ % 3 === 0) {
-                    hist.push(rec.level()); if (hist.length > 48) hist.shift();
+                    hist.push(rec.level()); if (hist.length > 320) hist.shift();
                     setLevels(hist.slice()); setElapsed(performance.now() - rec.startedAt);
                 }
                 raf = requestAnimationFrame(tick);
@@ -200,7 +247,9 @@
         const stopToPreview = async () => {
             const r = await recRef.current; recRef.current = null;
             const res = await r.stop();
-            previewRef.current = {...res, mime: r.mime, url: URL.createObjectURL(res.blob)};
+            let peaks = null;
+            try { peaks = computePeaks(await decodeAudio(await res.blob.arrayBuffer())); } catch (e) { log('peaks.error', {message: String(e)}); }
+            previewRef.current = {...res, mime: r.mime, url: URL.createObjectURL(res.blob), peaks};
             setLevels([]); setMode('preview');
         };
         const sendPreview = async () => { const p = previewRef.current; setMode('idle'); URL.revokeObjectURL(p.url); await sendVoice(p.blob, p.ms, p.mime, props.draft).catch((e) => log('send.error', {message: String(e)})); };
@@ -256,7 +305,7 @@
                 h('button', {key: 's', type: 'button', 'data-humm': 'send', 'aria-label': 'Senden', title: 'Senden (Enter)', onClick: stopAndSend, style: circleBtn('var(--button-bg)', 'var(--button-color)', 36)}, icon('send', 18))];
         } else if (mode === 'preview') {
             bar = [h('button', {key: 'x', type: 'button', 'data-humm': 'cancel', 'aria-label': 'Aufnahme verwerfen', title: 'Verwerfen (Esc)', onClick: discardPreview, style: circleBtn('rgba(var(--center-channel-color-rgb), 0.08)', 'var(--center-channel-color)')}, icon('x', 16)),
-                h(PreviewPlayer, {key: 'pp', url: previewRef.current.url, ms: previewRef.current.ms}),
+                h(PreviewPlayer, {key: 'pp', url: previewRef.current.url, ms: previewRef.current.ms, peaks: previewRef.current.peaks}),
                 h('button', {key: 's', type: 'button', 'data-humm': 'send', 'aria-label': 'Senden', title: 'Senden (Enter)', onClick: sendPreview, style: circleBtn('var(--button-bg)', 'var(--button-color)', 36)}, icon('send', 18))];
         }
 
@@ -298,6 +347,7 @@
     // Inline player for custom_hu_voice posts. File infos live in the store (entities.files), not in
     // post.metadata. Only one voice message plays at a time.
     let currentAudio = null;
+    const peakCache = new Map(); // fileId -> peaks, for posts without stored peaks
     const RATES = [1, 1.5, 2];
     function VoicePost(props) {
         const post = props.post;
@@ -305,12 +355,33 @@
         const files = window.ReactRedux.useSelector((st) => ids.map((id) => st.entities.files.files[id]).filter(Boolean), window.ReactRedux.shallowEqual);
         const file = files.find((f) => (f.mime_type || '').startsWith('audio/') && !f.name.endsWith('.stt.wav'));
         const fileId = file ? file.id : ids[0];
-        const knownSec = (((post.props || {}).hu_voice || {}).duration_ms || 0) / 1000;
+        const hv = (post.props || {}).hu_voice || {};
+        const knownSec = (hv.duration_ms || 0) / 1000;
         const audioRef = React.useRef(null);
         const [playing, setPlaying] = React.useState(false);
         const [pos, setPos] = React.useState(0);
         const [dur, setDur] = React.useState(knownSec);
         const [rate, setRate] = React.useState(1);
+        const propPeaks = hv.peaks;
+        const [peaks, setPeaks] = React.useState(propPeaks || peakCache.get(fileId) || null);
+        usePlaybackPosition(audioRef, playing, setPos);
+
+        // Older posts (and audio from other clients) have no stored peaks: decode once and cache.
+        React.useEffect(() => {
+            if (propPeaks) { setPeaks(propPeaks); return undefined; }
+            if (!fileId) return undefined;
+            if (peakCache.has(fileId)) { setPeaks(peakCache.get(fileId)); return undefined; }
+            let alive = true;
+            (async () => {
+                try {
+                    const res = await fetch(`/api/v4/files/${fileId}`, {credentials: 'include', headers: {'X-Requested-With': 'XMLHttpRequest'}});
+                    const p = computePeaks(await decodeAudio(await res.arrayBuffer()));
+                    peakCache.set(fileId, p);
+                    if (alive) setPeaks(p);
+                } catch (e) { log('peaks.error', {message: String(e)}); }
+            })();
+            return () => { alive = false; };
+        }, [fileId, propPeaks]);
 
         React.useEffect(() => {
             const a = audioRef.current;
@@ -335,30 +406,27 @@
             a.playbackRate = rate;
             a.play().catch((e) => log('play.error', {message: String(e)}));
         };
-        const seek = (e) => {
+        const onSeek = (ratio) => {
             const a = audioRef.current; const d = dur || a.duration;
             if (!d) return;
-            const r = e.currentTarget.getBoundingClientRect();
-            a.currentTime = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * d;
+            a.currentTime = ratio * d;
             setPos(a.currentTime);
         };
         const cycleRate = () => {
             const next = RATES[(RATES.indexOf(rate) + 1) % RATES.length];
             setRate(next); audioRef.current.playbackRate = next;
         };
-        const pct = dur ? Math.min(100, (pos / dur) * 100) : 0;
+        const progress = dur ? Math.min(1, pos / dur) : 0;
         const fg = 'rgba(var(--center-channel-color-rgb), 0.64)';
 
-        return h('div', {'data-humm': 'voice-post', style: {display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 360}},
+        return h('div', {'data-humm': 'voice-post', style: {display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 420}},
             h('audio', {ref: audioRef, preload: 'metadata', src: `/api/v4/files/${fileId}`}),
             h('div', {style: {display: 'flex', alignItems: 'center', gap: 10}},
                 h('button', {type: 'button', 'data-humm': 'play', 'aria-label': playing ? 'Pause' : 'Abspielen', onClick: toggle,
                     style: {width: 36, height: 36, borderRadius: '50%', border: 0, flex: 'none', cursor: 'pointer',
                         background: 'var(--button-bg)', color: 'var(--button-color)', padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center'}},
                 icon(playing ? 'pause' : 'play', 16)),
-                h('div', {'data-humm': 'seek', onClick: seek, style: {flex: 1, height: 16, display: 'flex', alignItems: 'center', cursor: 'pointer'}},
-                    h('div', {style: {position: 'relative', width: '100%', height: 4, borderRadius: 2, background: 'rgba(var(--center-channel-color-rgb), 0.16)'}},
-                        h('div', {style: {position: 'absolute', left: 0, top: 0, bottom: 0, width: `${pct}%`, borderRadius: 2, background: 'var(--button-bg)'}}))),
+                h(Waveform, {peaks, progress, onSeek}),
                 h('span', {'data-humm': 'time', style: {fontSize: 12, color: fg, fontVariantNumeric: 'tabular-nums', flex: 'none'}},
                     playing || pos > 0 ? fmt(pos * 1000) : fmt(dur * 1000)),
                 h('button', {type: 'button', 'data-humm': 'rate', onClick: cycleRate, 'aria-label': 'Wiedergabegeschwindigkeit',
