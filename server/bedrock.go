@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -61,13 +62,25 @@ func transcriptionPrompt(languageHint string) string {
 		b.WriteString(" The speaker most likely speaks " + languageHint + ".")
 	}
 	b.WriteString(" Keep the speaker's exact words, grammar and form of address. Never translate, correct, summarize" +
-		" or add anything, and do not add quotation marks. Output only the transcript.")
+		" or add anything, and do not add quotation marks. If there is no clearly spoken human speech (silence, noise," +
+		" music, tones, breathing), output exactly " + noSpeechMarker + " and nothing else. Output only the transcript.")
 	return b.String()
 }
 
-// cleanTranscript trims whitespace and quotation marks the model sometimes wraps the whole answer in.
+// noSpeechMarker is what the model is told to answer for audio without speech. Without it, Voxtral invented a
+// complete German sentence for a plain 440 Hz tone.
+const noSpeechMarker = "[no speech]"
+
+// timestampPattern matches "[00:00]"-style timestamps Voxtral sometimes puts in front of lines.
+var timestampPattern = regexp.MustCompile(`\[\d{1,2}:\d{2}(?::\d{2})?\]\s*`)
+
+// cleanTranscript trims whitespace and quotation marks the model sometimes wraps the whole answer in, and turns
+// the no-speech marker into an empty transcript.
 func cleanTranscript(s string) string {
-	s = strings.TrimSpace(s)
+	s = strings.TrimSpace(timestampPattern.ReplaceAllString(s, ""))
+	if strings.EqualFold(strings.Trim(s, " .\"'"), strings.Trim(noSpeechMarker, "[]")) || strings.Contains(strings.ToLower(s), noSpeechMarker) {
+		return ""
+	}
 	for _, q := range [][2]string{{`"`, `"`}, {"„", "“"}, {"“", "”"}, {"«", "»"}, {"»", "«"}} {
 		if len(s) > len(q[0])+len(q[1]) && strings.HasPrefix(s, q[0]) && strings.HasSuffix(s, q[1]) &&
 			!strings.Contains(s[len(q[0]):len(s)-len(q[1])], q[0]) {

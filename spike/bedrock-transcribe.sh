@@ -15,8 +15,11 @@ python3 -I - "$FILE" "$EXT" "${STT_LANGUAGE_HINT-German}" > "$TMP/messages.json"
 import base64, json, sys
 path, ext, lang = sys.argv[1], sys.argv[2].lower(), sys.argv[3]
 hint = f" The speaker most likely speaks {lang}." if lang else ""
+# Keep in sync with transcriptionPrompt in server/bedrock.go.
 PROMPT = ("Transcribe this voice message verbatim, in the language that is spoken." + hint +
-          " Never translate, summarize or add anything. Output only the transcript.")
+          " Keep the speaker's exact words, grammar and form of address. Never translate, correct, summarize"
+          " or add anything, and do not add quotation marks. If there is no clearly spoken human speech (silence, noise,"
+          " music, tones, breathing), output exactly [no speech] and nothing else. Output only the transcript.")
 with open(path, 'rb') as f:
     b64 = base64.b64encode(f.read()).decode()
 print(json.dumps([{"role": "user", "content": [

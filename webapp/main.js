@@ -66,7 +66,7 @@
             this.channelId = channelId; this.onUpdate = onUpdate; this.session = randomId();
             this.seq = 0; this.texts = []; this.inflight = new Set(); this.abort = new AbortController();
             this.parts = []; this.len = 0; this.frame = new Float32Array(FRAME); this.frameN = 0;
-            this.silentMs = 0; this.voicedFrames = 0; this.noise = 0.001; this.pos = 0; this.ended = false;
+            this.silentMs = 0; this.voicedFrames = 0; this.noise = 0.001; this.pos = 0; this.ended = false; this.zcr = [];
         }
 
         async attach(ctx, node) {
@@ -102,7 +102,11 @@
             const silent = rms < Math.max(0.0015, this.noise * 2.5);
             this.noise = silent ? this.noise * 0.95 + rms * 0.05 : Math.min(0.01, this.noise * 1.0005);
             this.silentMs = silent ? this.silentMs + 20 : 0;
-            if (!silent) this.voicedFrames++;
+            if (!silent) {
+                this.voicedFrames++;
+                let z = 0; for (let i = 1; i < f.length; i++) if ((f[i] < 0) !== (f[i - 1] < 0)) z++;
+                this.zcr.push(z / f.length);
+            }
             this.parts.push(f); this.len += f.length;
             const secs = this.len / STT_RATE;
             const pauseMs = secs < LONG_CHUNK_S ? 200 : 120;
@@ -110,10 +114,16 @@
         }
 
         cut() {
-            const voiced = this.voicedFrames; const parts = this.parts; const secs = this.len / STT_RATE;
-            this.parts = []; this.len = 0; this.voicedFrames = 0;
-            const sent = voiced >= 10; // under 200 ms of sound: nothing worth transcribing
-            log('stt.cut', {secs: Math.round(secs * 10) / 10, voiced, sent, seq: sent ? this.seq : null});
+            const voiced = this.voicedFrames; const parts = this.parts; const secs = this.len / STT_RATE; const zcr = this.zcr;
+            this.parts = []; this.len = 0; this.voicedFrames = 0; this.zcr = [];
+            // Speech changes its zero-crossing rate constantly (std >= 0.13 in tests); a steady tone or beep does not
+            // (0.0015). The model invents sentences for tones, so such chunks are never sent. Under 200 ms of sound
+            // is not worth transcribing either.
+            const mean = zcr.reduce((a, b) => a + b, 0) / (zcr.length || 1);
+            const zcrStd = Math.sqrt(zcr.reduce((a, b) => a + (b - mean) * (b - mean), 0) / (zcr.length || 1));
+            const tonal = voiced >= 10 && zcrStd < 0.04;
+            const sent = voiced >= 10 && !tonal;
+            log('stt.cut', {secs: Math.round(secs * 10) / 10, voiced, zcrStd: Math.round(zcrStd * 1000) / 1000, tonal, sent, seq: sent ? this.seq : null});
             if (!sent) return;
             const pcm = new Float32Array(parts.reduce((n, p) => n + p.length, 0));
             let o = 0; for (const p of parts) { pcm.set(p, o); o += p.length; }

@@ -103,6 +103,10 @@ func TestCleanTranscriptStripsWrappingQuotes(t *testing.T) {
 		"„Bitte tragt es ein.“":     "Bitte tragt es ein.",
 		` Er sagte "ja" und ging. `: `Er sagte "ja" und ging.`,
 		`"Eins" und "zwei"`:         `"Eins" und "zwei"`,
+		"[no speech]":               "",
+		" [No speech]. ":            "",
+		"No speech":                 "",
+		"[00:00] Hallo Team.":       "Hallo Team.",
 	}
 	for in, want := range cases {
 		if got := cleanTranscript(in); got != want {
