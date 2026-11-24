@@ -22,7 +22,9 @@ Recording ran in the Claude desktop app's built-in Chromium 156 browser on macOS
 | Send path | Decode, build the WAV, upload two files and create the `custom_hu_voice` post: 97 ms. |
 | iOS playback | iOS 27.2 Simulator Safari (AVFoundation) loads the browser-recorded fMP4, shows the right duration (16.34 s) and plays it. The Mattermost mobile app itself was not tested. |
 | Custom post renderer | `post.metadata.files` is missing in the renderer's props; file infos come from the store (`entities.files.files`). Core still draws the file tiles, so the stub hides them with `.post__body:has([data-humm=voice-post]) > .post-image__columns`. The stub player (play/pause, seek, 1×/1.5×/2×, one message at a time) plays the fMP4 in Chromium: the server sends `audio/mp4` with range support. |
-| Edited marker | Server source (`app/post.go`): changing `message` sets `EditAt`, so the post shows "Edited". Changing only `props` does not. |
+| Edited marker | Server source (`app/post.go`): changing `message` sets `EditAt`; changing only `props` does not. On desktop the custom renderer shows no "Edited" label (only a `post--edited` class), so it would only show on mobile. |
+| Transcript row | Under the player: a chevron "Transkript" toggle, collapsed by default, which remembers its state while the list re-renders. It also has "wird erstellt …" (pending) and "nicht verfügbar" (failed) states. `spike/transcribe-post.sh` fills `props.hu_voice.transcript` the way the v1 server will: 0.7–1.4 s per post. |
+| Recorder UI | An overlay covers the composer while recording. Holding shows timer, "‹ Nach links: abbrechen" and live level bars, kept left of the red mic circle, with a lock hint above it. Slid left shows red "Loslassen zum Verwerfen" and a trash circle. Locked shows ✕, timer, level bars, stop-to-listen and send. Preview shows ✕, play, progress and send. Esc cancels and Enter sends; the animations respect reduced motion. |
 
 ## Speech-to-text
 
@@ -36,6 +38,7 @@ Recording ran in the Claude desktop app's built-in Chromium 156 browser on macOS
 | Voxtral Small, same clip | 2.2 s, and it paraphrased ("kurze Info" for "kurzes Update", "der Hufschmied" for "die Hufschmiedin"). Not better here. |
 | Voxtral Mini, 54 s clip | 2.8 s. Errors: "lammet" (lahmt), "Pferden" (Verden), "Ecke" (App). Numbers and times were right. |
 | Voxtral Mini, WAV decoded from the Chromium AAC | "kurzes App" and "Hofschmiedin". A later run on the direct WAV also got "Appointement" and "Hofschmiedin", so output varies between runs at temperature 0. AAC is not shown to be the cause. |
+| Translation | With "transcribe in its language", Voxtral translated a 3 s German clip into English. Fixed with an explicit prompt (verbatim, never translate) plus an optional language hint: German in 4/4 runs, and an English clip stays English. |
 | Repeated audio | A clip that repeats the same sentence came back as one sentence, both at 115 s and inside a 30 s chunk. The model silently drops repeats, and chunking does not prevent it. |
 | Bedrock data handling | Content is not shared with model providers. Retention mode `none` (zero data retention) can be set per account or project through the API. Training use and in-region processing are not stated on the current pages. Set `none` and check Voxtral's `allowed_modes` before production. |
 

@@ -2,6 +2,7 @@
 # Spike: transcribe one audio file with Voxtral on Amazon Bedrock (Converse API).
 # Usage: spike/bedrock-transcribe.sh <file> [model-id] [region]
 # Prints the transcript, wall-clock latency and token usage. Use fictional audio only.
+# STT_LANGUAGE_HINT (default German; empty for none) tells the model the likely language.
 set -euo pipefail
 FILE="$1"
 MODEL="${2:-mistral.voxtral-mini-3b-2507}"
@@ -10,14 +11,17 @@ EXT="${FILE##*.}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-python3 -I - "$FILE" "$EXT" > "$TMP/messages.json" <<'EOF'
+python3 -I - "$FILE" "$EXT" "${STT_LANGUAGE_HINT-German}" > "$TMP/messages.json" <<'EOF'
 import base64, json, sys
-path, ext = sys.argv[1], sys.argv[2].lower()
+path, ext, lang = sys.argv[1], sys.argv[2].lower(), sys.argv[3]
+hint = f" The speaker most likely speaks {lang}." if lang else ""
+PROMPT = ("Transcribe this voice message verbatim, in the language that is spoken." + hint +
+          " Never translate, summarize or add anything. Output only the transcript.")
 with open(path, 'rb') as f:
     b64 = base64.b64encode(f.read()).decode()
 print(json.dumps([{"role": "user", "content": [
     {"audio": {"format": ext, "source": {"bytes": b64}}},
-    {"text": "Transkribiere diese Sprachnachricht wortgetreu in ihrer Sprache. Gib nur den transkribierten Text aus, ohne Kommentar."}
+    {"text": PROMPT}
 ]}]))
 EOF
 
