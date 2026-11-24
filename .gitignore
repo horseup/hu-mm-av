@@ -1,0 +1,18 @@
+# Build output
+dist/
+*.tar.gz
+server/dist/
+webapp/dist/
+node_modules/
+
+# Local-only notes and spike artifacts (may reference private deployments)
+.local/
+spike/out/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
