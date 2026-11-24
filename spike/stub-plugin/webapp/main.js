@@ -118,8 +118,8 @@
         mic: {fill: 'M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 0 0-7 0v6A3.5 3.5 0 0 0 12 15zm6-3.5h-1.6a4.4 4.4 0 0 1-8.8 0H6a6 6 0 0 0 5.2 5.94V20h1.6v-2.56A6 6 0 0 0 18 11.5z'},
         x: {stroke: 'M6 6l12 12M18 6L6 18'},
         lock: {stroke: 'M8 11V8a4 4 0 0 1 8 0v3M6 11h12v9H6z'},
-        send: {fill: 'M3 11.4L21 3l-8.4 18-2.1-7.5z'},
-        stop: {fill: 'M7 7h10v10H7z'},
+        send: {fill: 'M3.5 20.2L21.6 12 3.5 3.8l.02 6.5L15.5 12 3.52 13.7z'}, // paper plane pointing right, as in Mattermost's own send button
+        stop: {fill: 'M8 5h8a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3z'},
         trash: {stroke: 'M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3'},
         chevL: {stroke: 'M15 6l-6 6 6 6'},
         chevU: {stroke: 'M6 15l6-6 6 6'},
@@ -133,6 +133,37 @@
                 h('path', {d: d.stroke, fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round'}));
     };
     const muted = 'rgba(var(--center-channel-color-rgb), 0.64)';
+    // Use Mattermost's own send icon (read from its composer), so ours always matches the host version.
+    let hostSendPath = null;
+    const sendIcon = () => {
+        if (!hostSendPath) {
+            const path = document.querySelector('[data-testid="SendMessageButton"] svg path');
+            if (path) hostSendPath = path.getAttribute('d');
+        }
+        return hostSendPath ? h('svg', {width: 18, height: 18, viewBox: '0 0 24 24', 'aria-hidden': true, style: {display: 'block'}}, h('path', {d: hostSendPath, fill: 'currentColor'})) : icon('send', 18);
+    };
+    // Same shape as Mattermost's send button (48 × 32, 4 px corners).
+    const actionBtn = (bg, color) => ({width: 48, height: 32, borderRadius: 4, border: 0, padding: 0, flex: 'none',
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', background: bg, color});
+
+    const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+    const MOD = IS_MAC ? '⌘' : 'Ctrl';
+    const SHORTCUTS = {cancel: ['Esc'], stop: [MOD, 'S'], send: ['Enter']};
+    const kbd = (k) => h('span', {key: k, style: {display: 'inline-block', minWidth: 16, padding: '0 4px', marginLeft: 4, borderRadius: 3, textAlign: 'center',
+        background: 'rgba(255, 255, 255, 0.16)', fontSize: 11, lineHeight: '16px'}}, k);
+    // Hover/focus tooltip in Mattermost's style: label plus shortcut keys.
+    function WithTooltip({label, keys, children}) {
+        const [rect, setRect] = React.useState(null);
+        const show = (e) => setRect(e.currentTarget.getBoundingClientRect());
+        const hide = () => setRect(null);
+        return h('span', {onMouseEnter: show, onMouseLeave: hide, onFocus: show, onBlur: hide, onClick: hide, style: {display: 'inline-flex', flex: 'none'}},
+            children,
+            rect && window.ReactDOM.createPortal(h('div', {role: 'tooltip', 'data-humm': 'tooltip', style: {position: 'fixed', zIndex: 1002, pointerEvents: 'none',
+                left: rect.left + rect.width / 2, top: rect.top - 8, transform: 'translate(-50%, -100%)', whiteSpace: 'nowrap',
+                display: 'flex', alignItems: 'center', padding: '4px 8px', borderRadius: 4, fontSize: 12, lineHeight: '16px',
+                background: 'rgba(0, 0, 0, 0.88)', color: '#fff', boxShadow: '0 2px 6px rgba(0, 0, 0, 0.16)'}}, label, ...(keys || []).map(kbd)), document.body));
+    }
+
     const circleBtn = (bg, color, size = 32) => ({width: size, height: size, borderRadius: '50%', border: 0, padding: 0, flex: 'none',
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', background: bg, color});
 
@@ -261,6 +292,7 @@
             const onKey = (e) => {
                 if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (mode === 'locked') discard(); else discardPreview(); }
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); if (mode === 'locked') stopAndSend(); else sendPreview(); }
+                if (mode === 'locked' && (e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); e.stopPropagation(); stopToPreview(); }
             };
             window.addEventListener('keydown', onKey, true);
             return () => window.removeEventListener('keydown', onKey, true);
@@ -299,14 +331,14 @@
             bar = [h('span', {key: 'c', style: {display: 'inline-flex', alignItems: 'center', gap: 8, color: RED, fontSize: 14, fontWeight: 600}}, icon('trash', 18), 'Loslassen zum Verwerfen'),
                 h('span', {key: 's', style: {flex: 1}}), h(Timer, {key: 't', ms: elapsed, blink: false})];
         } else if (mode === 'locked') {
-            bar = [h('button', {key: 'x', type: 'button', 'data-humm': 'cancel', 'aria-label': 'Aufnahme verwerfen', title: 'Verwerfen (Esc)', onClick: discard, style: circleBtn('rgba(var(--center-channel-color-rgb), 0.08)', 'var(--center-channel-color)')}, icon('x', 16)),
+            bar = [h(WithTooltip, {key: 'x', label: 'Verwerfen', keys: SHORTCUTS.cancel}, h('button', {type: 'button', 'data-humm': 'cancel', 'aria-label': 'Aufnahme verwerfen', 'aria-keyshortcuts': 'Escape', onClick: discard, style: circleBtn('rgba(var(--center-channel-color-rgb), 0.08)', 'var(--center-channel-color)')}, icon('x', 16))),
                 h(Timer, {key: 't', ms: elapsed, blink: true}), h(LevelBars, {key: 'l', levels, color: RED}),
-                h('button', {key: 'p', type: 'button', 'data-humm': 'listen', 'aria-label': 'Stoppen und anhören', title: 'Stoppen und anhören', onClick: stopToPreview, style: circleBtn('rgba(var(--center-channel-color-rgb), 0.08)', RED)}, icon('stop', 14)),
-                h('button', {key: 's', type: 'button', 'data-humm': 'send', 'aria-label': 'Senden', title: 'Senden (Enter)', onClick: stopAndSend, style: circleBtn('var(--button-bg)', 'var(--button-color)', 36)}, icon('send', 18))];
+                h(WithTooltip, {key: 'p', label: 'Stoppen & anhören', keys: SHORTCUTS.stop}, h('button', {type: 'button', 'data-humm': 'listen', 'aria-label': 'Stoppen und anhören', 'aria-keyshortcuts': IS_MAC ? 'Meta+S' : 'Control+S', onClick: stopToPreview, style: actionBtn('rgba(210, 75, 78, 0.12)', RED)}, icon('stop', 26))),
+                h(WithTooltip, {key: 's', label: 'Senden', keys: SHORTCUTS.send}, h('button', {type: 'button', 'data-humm': 'send', 'aria-label': 'Senden', 'aria-keyshortcuts': 'Enter', onClick: stopAndSend, style: actionBtn('var(--button-bg)', 'var(--button-color)')}, sendIcon()))];
         } else if (mode === 'preview') {
-            bar = [h('button', {key: 'x', type: 'button', 'data-humm': 'cancel', 'aria-label': 'Aufnahme verwerfen', title: 'Verwerfen (Esc)', onClick: discardPreview, style: circleBtn('rgba(var(--center-channel-color-rgb), 0.08)', 'var(--center-channel-color)')}, icon('x', 16)),
+            bar = [h(WithTooltip, {key: 'x', label: 'Verwerfen', keys: SHORTCUTS.cancel}, h('button', {type: 'button', 'data-humm': 'cancel', 'aria-label': 'Aufnahme verwerfen', 'aria-keyshortcuts': 'Escape', onClick: discardPreview, style: circleBtn('rgba(var(--center-channel-color-rgb), 0.08)', 'var(--center-channel-color)')}, icon('x', 16))),
                 h(PreviewPlayer, {key: 'pp', url: previewRef.current.url, ms: previewRef.current.ms, peaks: previewRef.current.peaks}),
-                h('button', {key: 's', type: 'button', 'data-humm': 'send', 'aria-label': 'Senden', title: 'Senden (Enter)', onClick: sendPreview, style: circleBtn('var(--button-bg)', 'var(--button-color)', 36)}, icon('send', 18))];
+                h(WithTooltip, {key: 's', label: 'Senden', keys: SHORTCUTS.send}, h('button', {type: 'button', 'data-humm': 'send', 'aria-label': 'Senden', 'aria-keyshortcuts': 'Enter', onClick: sendPreview, style: actionBtn('var(--button-bg)', 'var(--button-color)')}, sendIcon()))];
         }
 
         const overlays = [];
