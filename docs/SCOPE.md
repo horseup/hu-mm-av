@@ -66,7 +66,7 @@ Status: spike done 2026-11-24 ([SPIKE.md](SPIKE.md)). v0.1 server part built the
 - **Chunk boundaries.** Short live chunks cut mid-phrase cause errors ("sechs Uhr dreißig" became "6: Um 30") and, once, an invented phrase. Passing the previous chunk's text as context made it worse (the model continued that text), so it was removed. Options: longer minimum chunks, or a final pass over larger segments when sending.
 - **Silent omissions.** Voxtral drops repeated content, even inside a 30 s chunk.
 - **Accuracy varies between runs** at temperature 0, and every test so far used TTS. Real voices need testing.
-- **Composer slot.** The mic sits in the formatting bar and disappears when a user collapses it.
+- **Composer slot.** Decided 2026-11-24: keep the mic in the official formatting-bar slot, which is stable across updates, even though it disappears when a user collapses the bar. A hold-a-key shortcut, still to build, will cover recording with the bar collapsed.
 - **Firefox** cannot record MP4, so it falls back to WebM/Opus, which the iOS app may not play. Options: accept it, block recording in Firefox, or transcode on the server.
 - **Edited marker.** Writing the transcript into the message marks the post "Edited". The alternative is to create the post only after transcription, about 1–3 s later.
 - **AWS credentials.** They live either in plugin settings in the Mattermost config or in environment variables on the host. Use an IAM user scoped to `bedrock:InvokeModel` on Voxtral. Decide before the production install.
