@@ -2,7 +2,7 @@
 
 Telegram-style voice messages for Mattermost, with automatic transcription. Round video messages follow in phase 2.
 
-Status: spike in progress (started 2026-11-24). Developed and tested against Mattermost 11.7.11 Team Edition.
+Status: spike done 2026-11-24, see [SPIKE.md](SPIKE.md). Developed and tested against Mattermost 11.7.11 Team Edition.
 
 ## Decisions
 
@@ -12,7 +12,7 @@ Status: spike in progress (started 2026-11-24). Developed and tested against Mat
 | v1 | Voice and automatic transcription. Round video is phase 2. |
 | Recording | Press and hold the mic in the composer, release to send. Slide away to cancel. Drag up to lock for hands-free recording; when locked, the sender can listen back before sending. A keyboard shortcut can be held to record. |
 | Transcription | Starts automatically after sending. The transcript is written into the post message so mobile users see it. On desktop it sits collapsed under the player. |
-| Speech-to-text | AWS eu-central-1 (Frankfurt) by default. Day 1 spike: Amazon Transcribe against Bedrock Voxtral on the same clips, keep the better one on accuracy and latency. Transcribe needs an AWS Organizations AI services opt-out policy first. Without it, Transcribe stores and uses voice inputs for service improvement by default, possibly outside the region. The provider sits behind an interface so an OpenAI-compatible EU endpoint (Mistral EU, OpenRouter EU) can replace it through config. |
+| Speech-to-text | Voxtral Mini 3B on Amazon Bedrock in eu-west-1 (Ireland), through the Converse API, about $0.02 a month at 400 minutes. The browser captures raw PCM while recording and sends 16 kHz WAV chunks of about 30 s, transcribed in parallel. Amazon Transcribe and Frankfurt were ruled out in the spike ([SPIKE.md](SPIKE.md)). The provider sits behind an interface, so an OpenAI-compatible EU endpoint can replace it through config. |
 | Repo | `horseup/hu-mm-av`, public, MIT. No deployment secrets or internal data. All configuration goes through the System Console. |
 | Stack | Go server plugin and a TypeScript/React webapp plugin. Server plugins must be Go, because the Mattermost plugin RPC has no Rust path. The webapp uses React provided by the host, so it is not bundled. Start fresh from `mattermost-plugin-starter-template`. MIT ideas from voice-notes (waveform player) and VoiceClips (circle player) are borrowed with attribution. |
 
