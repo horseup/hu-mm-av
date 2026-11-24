@@ -21,7 +21,7 @@ Recording ran in the Claude desktop app's built-in Chromium 156 browser on macOS
 | Recording format | Mattermost Desktop 6.4.0 runs Electron 45.2.1 / Chromium 156, which records `audio/mp4;codecs=mp4a.40.2` natively. Output is fragmented MP4 (AAC, 64 kbps), and ffprobe reads its duration: 17 s = 126 KB. |
 | Send path | Decode, build the WAV, upload two files and create the `custom_hu_voice` post: 97 ms. |
 | iOS playback | iOS 27.2 Simulator Safari (AVFoundation) loads the browser-recorded fMP4, shows the right duration (16.34 s) and plays it. The Mattermost mobile app itself was not tested. |
-| Custom post renderer | It renders, but `post.metadata.files` is missing in its props (read file IDs from the store), and core still draws the file tiles below it, so v1 must hide them for this post type. |
+| Custom post renderer | `post.metadata.files` is missing in the renderer's props; file infos come from the store (`entities.files.files`). Core still draws the file tiles, so the stub hides them with `.post__body:has([data-humm=voice-post]) > .post-image__columns`. The stub player (play/pause, seek, 1×/1.5×/2×, one message at a time) plays the fMP4 in Chromium: the server sends `audio/mp4` with range support. |
 | Edited marker | Server source (`app/post.go`): changing `message` sets `EditAt`, so the post shows "Edited". Changing only `props` does not. |
 
 ## Speech-to-text

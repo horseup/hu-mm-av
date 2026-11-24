@@ -153,18 +153,95 @@
                 small('Verwerfen', () => setMode('idle'))));
     }
 
+    // Inline player for custom_hu_voice posts. File infos live in the store (entities.files), not in
+    // post.metadata. Only one voice message plays at a time.
+    let currentAudio = null;
+    const RATES = [1, 1.5, 2];
     function VoicePost(props) {
         const post = props.post;
-        const files = (post.metadata && post.metadata.files) || [];
-        const audio = files.find((f) => (f.mime_type || '').startsWith('audio/') && !f.name.endsWith('.stt.wav'));
-        return h('div', {'data-humm': 'voice-post'},
-            audio && h('audio', {controls: true, preload: 'metadata', src: `/api/v4/files/${audio.id}`, style: {height: 32}}),
-            h('div', {style: {fontSize: 13, opacity: 0.8}}, post.message));
+        const ids = post.file_ids || [];
+        const files = window.ReactRedux.useSelector((st) => ids.map((id) => st.entities.files.files[id]).filter(Boolean), window.ReactRedux.shallowEqual);
+        const file = files.find((f) => (f.mime_type || '').startsWith('audio/') && !f.name.endsWith('.stt.wav'));
+        const fileId = file ? file.id : ids[0];
+        const knownSec = (((post.props || {}).hu_voice || {}).duration_ms || 0) / 1000;
+        const audioRef = React.useRef(null);
+        const [playing, setPlaying] = React.useState(false);
+        const [pos, setPos] = React.useState(0);
+        const [dur, setDur] = React.useState(knownSec);
+        const [rate, setRate] = React.useState(1);
+
+        React.useEffect(() => {
+            const a = audioRef.current;
+            if (!a) return undefined;
+            const on = {
+                play: () => setPlaying(true),
+                pause: () => setPlaying(false),
+                ended: () => { setPlaying(false); setPos(0); },
+                timeupdate: () => setPos(a.currentTime),
+                loadedmetadata: () => { if (isFinite(a.duration) && a.duration > 0) setDur(a.duration); },
+            };
+            Object.entries(on).forEach(([k, fn]) => a.addEventListener(k, fn));
+            return () => Object.entries(on).forEach(([k, fn]) => a.removeEventListener(k, fn));
+        }, [fileId]);
+
+        if (!fileId) return h('div', {'data-humm': 'voice-post'}, post.message);
+        const toggle = () => {
+            const a = audioRef.current;
+            if (!a.paused) { a.pause(); return; }
+            if (currentAudio && currentAudio !== a) currentAudio.pause();
+            currentAudio = a;
+            a.playbackRate = rate;
+            a.play().catch((e) => log('play.error', {message: String(e)}));
+        };
+        const seek = (e) => {
+            const a = audioRef.current; const d = dur || a.duration;
+            if (!d) return;
+            const r = e.currentTarget.getBoundingClientRect();
+            a.currentTime = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * d;
+            setPos(a.currentTime);
+        };
+        const cycleRate = () => {
+            const next = RATES[(RATES.indexOf(rate) + 1) % RATES.length];
+            setRate(next); audioRef.current.playbackRate = next;
+        };
+        const pct = dur ? Math.min(100, (pos / dur) * 100) : 0;
+        const fg = 'rgba(var(--center-channel-color-rgb), 0.64)';
+
+        return h('div', {'data-humm': 'voice-post', style: {display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 360}},
+            h('audio', {ref: audioRef, preload: 'metadata', src: `/api/v4/files/${fileId}`}),
+            h('div', {style: {display: 'flex', alignItems: 'center', gap: 10}},
+                h('button', {type: 'button', 'data-humm': 'play', 'aria-label': playing ? 'Pause' : 'Abspielen', onClick: toggle,
+                    style: {width: 36, height: 36, borderRadius: '50%', border: 0, flex: 'none', cursor: 'pointer',
+                        background: 'var(--button-bg)', color: 'var(--button-color)', fontSize: 14, lineHeight: '36px', padding: 0}},
+                playing ? '❚❚' : '▶'),
+                h('div', {'data-humm': 'seek', onClick: seek, style: {flex: 1, height: 16, display: 'flex', alignItems: 'center', cursor: 'pointer'}},
+                    h('div', {style: {position: 'relative', width: '100%', height: 4, borderRadius: 2, background: 'rgba(var(--center-channel-color-rgb), 0.16)'}},
+                        h('div', {style: {position: 'absolute', left: 0, top: 0, bottom: 0, width: `${pct}%`, borderRadius: 2, background: 'var(--button-bg)'}}))),
+                h('span', {'data-humm': 'time', style: {fontSize: 12, color: fg, fontVariantNumeric: 'tabular-nums', flex: 'none'}},
+                    playing || pos > 0 ? fmt(pos * 1000) : fmt(dur * 1000)),
+                h('button', {type: 'button', 'data-humm': 'rate', onClick: cycleRate, 'aria-label': 'Wiedergabegeschwindigkeit',
+                    style: {border: `1px solid ${fg}`, borderRadius: 10, background: 'transparent', color: fg, fontSize: 11, padding: '0 6px', cursor: 'pointer', flex: 'none'}},
+                `${rate}×`)),
+            h('div', {style: {fontSize: 13, color: fg}}, post.message));
     }
 
-    window.registerPlugin(PLUGIN_ID, {initialize(registry) {
-        registry.registerPostEditorActionComponent(MicButton);
-        registry.registerPostTypeComponent('custom_hu_voice', VoicePost);
-        log('init');
-    }});
+    // Hide the core file tiles under voice posts on desktop/web. Mobile apps don't run plugin code and keep them.
+    const STYLE_ID = 'humm-style';
+    const CSS = '.post__body:has([data-humm=voice-post]) > .post-image__columns { display: none; }';
+
+    window.registerPlugin(PLUGIN_ID, {
+        initialize(registry) {
+            registry.registerPostEditorActionComponent(MicButton);
+            registry.registerPostTypeComponent('custom_hu_voice', VoicePost);
+            if (!document.getElementById(STYLE_ID)) {
+                const style = document.createElement('style'); style.id = STYLE_ID; style.textContent = CSS;
+                document.head.appendChild(style);
+            }
+            log('init');
+        },
+        uninitialize() {
+            const style = document.getElementById(STYLE_ID); if (style) style.remove();
+            if (currentAudio) currentAudio.pause();
+        },
+    });
 }());
