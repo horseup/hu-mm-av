@@ -1,5 +1,7 @@
 # Spike results (2026-11-24)
 
+This records the spike as run. The v0.1 implementation differs in places: live 3–15 s chunks instead of ~30 s, and posts created by the server. See [SCOPE.md](SCOPE.md) → Architecture.
+
 Tested on a local Mattermost 11.7.11 Team Edition (`dev/docker-compose.yml`), with the stub plugin in `spike/stub-plugin` (one 4.6 KB tarball, no build step) and `spike/bedrock-transcribe.sh`. All audio was fictional German speech from macOS TTS.
 
 ## Verdict

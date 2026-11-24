@@ -66,7 +66,7 @@
             this.channelId = channelId; this.onUpdate = onUpdate; this.session = randomId();
             this.seq = 0; this.texts = []; this.inflight = new Set(); this.abort = new AbortController();
             this.parts = []; this.len = 0; this.frame = new Float32Array(FRAME); this.frameN = 0;
-            this.silentMs = 0; this.voicedFrames = 0; this.noise = 0.004; this.pos = 0; this.ended = false;
+            this.silentMs = 0; this.voicedFrames = 0; this.noise = 0.001; this.pos = 0; this.ended = false;
         }
 
         async attach(ctx, node) {
@@ -97,8 +97,10 @@
         onFrame(f) {
             let s = 0; for (let i = 0; i < f.length; i++) s += f[i] * f[i];
             const rms = Math.sqrt(s / f.length);
-            const silent = rms < Math.max(0.008, this.noise * 2.5);
-            this.noise = silent ? this.noise * 0.95 + rms * 0.05 : this.noise * 1.002;
+            // Noise floor follows silent frames and only creeps up during speech (capped), so long or quiet
+            // speech is not mistaken for silence.
+            const silent = rms < Math.max(0.0015, this.noise * 2.5);
+            this.noise = silent ? this.noise * 0.95 + rms * 0.05 : Math.min(0.01, this.noise * 1.0005);
             this.silentMs = silent ? this.silentMs + 20 : 0;
             if (!silent) this.voicedFrames++;
             this.parts.push(f); this.len += f.length;
@@ -108,9 +110,11 @@
         }
 
         cut() {
-            const voiced = this.voicedFrames; const parts = this.parts;
+            const voiced = this.voicedFrames; const parts = this.parts; const secs = this.len / STT_RATE;
             this.parts = []; this.len = 0; this.voicedFrames = 0;
-            if (voiced < 10) return; // under 200 ms of sound: nothing worth transcribing
+            const sent = voiced >= 10; // under 200 ms of sound: nothing worth transcribing
+            log('stt.cut', {secs: Math.round(secs * 10) / 10, voiced, sent, seq: sent ? this.seq : null});
+            if (!sent) return;
             const pcm = new Float32Array(parts.reduce((n, p) => n + p.length, 0));
             let o = 0; for (const p of parts) { pcm.set(p, o); o += p.length; }
             this.send(this.seq++, wavFromPcm16k(pcm));
@@ -156,9 +160,18 @@
         const analyser = source.ctx.createAnalyser(); analyser.fftSize = 1024;
         source.node.connect(analyser);
         const frame = new Float32Array(analyser.fftSize);
-        const level = () => { analyser.getFloatTimeDomainData(frame); let s = 0; for (let i = 0; i < frame.length; i++) s += frame[i] * frame[i]; return Math.min(1, Math.sqrt(s / frame.length) * 5); };
+        // Level for the live bars, scaled to the recent peak so quiet microphones still show movement.
+        let peak = 0.02;
+        const level = () => {
+            analyser.getFloatTimeDomainData(frame); let s = 0; for (let i = 0; i < frame.length; i++) s += frame[i] * frame[i];
+            const rms = Math.sqrt(s / frame.length);
+            peak = Math.max(rms, peak * 0.997, 0.005);
+            return Math.min(1, rms / peak);
+        };
+        const cfg = await pluginConfig();
+        const maxMs = (cfg.max_duration_sec || 300) * 1000;
         let live = null;
-        if ((await pluginConfig()).transcription) {
+        if (cfg.transcription) {
             live = new LiveTranscriber(channelId, onText);
             try { await live.attach(source.ctx, source.node); } catch (e) { log('stt.attach.error', {message: String(e)}); live = null; }
         }
@@ -170,7 +183,7 @@
         recorder.start(250);
         const startedAt = performance.now();
         log('rec.start', {mime: recorder.mimeType, live: !!live});
-        return {mime: recorder.mimeType, startedAt, level, live,
+        return {mime: recorder.mimeType, startedAt, level, live, maxMs,
             stop: async () => {
                 if (recorder.state !== 'inactive') recorder.stop();
                 const blob = await stopped;
@@ -206,7 +219,11 @@
     async function sendVoice(blob, ms, mime, draft, live) {
         const t0 = performance.now();
         let peaks = [];
-        try { peaks = computePeaks(await decodeAudio(await blob.arrayBuffer())); } catch (e) { log('peaks.error', {message: String(e)}); }
+        try {
+            const decoded = await decodeAudio(await blob.arrayBuffer());
+            peaks = computePeaks(decoded);
+            if (decoded.duration > 0) ms = decoded.duration * 1000; // the audio's real length, not the wall clock
+        } catch (e) { log('peaks.error', {message: String(e)}); }
         const fd = new FormData();
         fd.append('channel_id', draft.channelId);
         fd.append('files', new File([blob], `voice-${Date.now()}.${mime.includes('webm') ? 'webm' : 'm4a'}`, {type: mime.split(';')[0]}));
@@ -351,6 +368,8 @@
         const [btnEl, setBtnEl] = React.useState(null);
         const [live, setLive] = React.useState({text: '', pending: false});
         const [liveEnabled, setLiveEnabled] = React.useState(false);
+        const [sendError, setSendError] = React.useState(false);
+        const autoStopRef = React.useRef(null);
         const modeRef = React.useRef('idle');
         const recRef = React.useRef(null);
         const originRef = React.useRef(null);
@@ -366,12 +385,15 @@
         // Timer and level bars while recording.
         React.useEffect(() => {
             if (mode !== 'recording' && mode !== 'cancel' && mode !== 'locked') return undefined;
-            let raf = 0; let rec = null; let frameNo = 0; const hist = [];
+            let raf = 0; let rec = null; let frameNo = 0; let limitHit = false; const hist = [];
             if (recRef.current) recRef.current.then((r) => { rec = r; }).catch(() => {});
             const tick = () => {
                 if (rec && frameNo++ % 3 === 0) {
                     hist.push(rec.level()); if (hist.length > 320) hist.shift();
-                    setLevels(hist.slice()); setElapsed(performance.now() - rec.startedAt);
+                    const ms = performance.now() - rec.startedAt;
+                    setLevels(hist.slice()); setElapsed(ms);
+                    // At the maximum length, stop into listen-back instead of losing the recording.
+                    if (!limitHit && ms >= rec.maxMs) { limitHit = true; log('rec.limit', {ms: Math.round(ms)}); autoStopRef.current(); return; }
                 }
                 raf = requestAnimationFrame(tick);
             };
@@ -384,10 +406,16 @@
             const r = p && await p.catch(() => null);
             if (r) { if (r.live) r.live.cancel(); await r.stop(); }
         };
-        const send = async (blob, ms, mime, liveT) => {
-            setMode('sending');
-            try { await sendVoice(blob, ms, mime, props.draft, liveT); setMode('idle'); } catch (e) { log('send.error', {message: String(e)}); flash('error'); }
-            resetLive();
+        const send = async (blob, ms, mime, liveT, peaks) => {
+            setMode('sending'); setSendError(false);
+            try {
+                await sendVoice(blob, ms, mime, props.draft, liveT);
+                setMode('idle'); resetLive();
+            } catch (e) {
+                log('send.error', {message: String(e)});
+                previewRef.current = {blob, ms, mime, live: liveT, peaks: peaks || null, url: URL.createObjectURL(blob)};
+                setSendError(true); setMode('preview');
+            }
         };
         const stopAndSend = async () => {
             const r = await recRef.current; recRef.current = null;
@@ -404,8 +432,9 @@
             previewRef.current = {...res, mime: r.mime, url: URL.createObjectURL(res.blob), peaks, live: r.live};
             setLevels([]); setMode('preview');
         };
-        const sendPreview = async () => { const p = previewRef.current; previewRef.current = null; URL.revokeObjectURL(p.url); await send(p.blob, p.ms, p.mime, p.live); };
-        const discardPreview = () => { const p = previewRef.current; if (p) { URL.revokeObjectURL(p.url); if (p.live) p.live.cancel(); } previewRef.current = null; resetLive(); setMode('idle'); };
+        autoStopRef.current = stopToPreview;
+        const sendPreview = async () => { const p = previewRef.current; previewRef.current = null; URL.revokeObjectURL(p.url); await send(p.blob, p.ms, p.mime, p.live, p.peaks); };
+        const discardPreview = () => { const p = previewRef.current; if (p) { URL.revokeObjectURL(p.url); if (p.live) p.live.cancel(); } previewRef.current = null; resetLive(); setSendError(false); setMode('idle'); };
 
         // Esc cancels, Enter sends, while locked or previewing.
         React.useEffect(() => {
@@ -473,7 +502,9 @@
             let placeholder = 'Transkript erscheint beim Sprechen …';
             if (live.pending && !live.text) placeholder = 'Wird transkribiert …';
             else if (mode === 'preview' && !live.text) placeholder = 'Kein Transkript';
-            const textRow = showText && h('div', {key: 'txt', 'data-humm': 'live-text', 'aria-live': 'polite', style: {height: textHeight, overflow: 'hidden', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end',
+            const showError = sendError && mode === 'preview';
+            const textRow = showError ? h('div', {key: 'err', 'data-humm': 'send-error', role: 'alert', style: {height: textHeight, display: 'flex', alignItems: 'flex-end', fontSize: 13, lineHeight: '18px', color: RED}},
+                'Senden fehlgeschlagen. Die Aufnahme ist noch da: Enter versucht es erneut.') : showText && h('div', {key: 'txt', 'data-humm': 'live-text', 'aria-live': 'polite', style: {height: textHeight, overflow: 'hidden', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end',
                 fontSize: 13, lineHeight: '18px', color: live.text ? 'var(--center-channel-color)' : muted, fontStyle: live.text ? 'normal' : 'italic'}},
             h('div', null, live.text || placeholder, live.text && live.pending ? h('span', {style: {color: muted}}, ' …') : null));
             overlays.push(h('div', {key: 'bar', 'data-humm': 'recorder', 'data-humm-mode-bar': mode, style: {position: 'fixed', zIndex: 1000,
@@ -610,7 +641,7 @@
         const muted = {fontSize: 12, color: fg, fontStyle: 'italic'};
         if (status === 'pending') return h('div', {'data-humm': 'transcript-pending', style: muted}, 'Transkript wird erstellt …');
         if (status === 'failed') return h('div', {'data-humm': 'transcript-failed', style: muted}, 'Transkript nicht verfügbar');
-        if (status !== 'done' || !hv.transcript) return null;
+        if ((status !== 'done' && status !== 'partial') || !hv.transcript) return null;
         const toggle = () => { const next = !open; if (next) expandedPosts.add(post.id); else expandedPosts.delete(post.id); setOpen(next); };
         const chevron = h('svg', {width: 16, height: 16, viewBox: '0 0 24 24', 'aria-hidden': true,
             style: {transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 150ms ease'}},
@@ -618,7 +649,7 @@
         return h('div', {'data-humm': 'transcript'},
             h('button', {type: 'button', 'data-humm': 'transcript-toggle', 'aria-expanded': open, onClick: toggle,
                 style: {display: 'inline-flex', alignItems: 'center', gap: 4, border: 0, background: 'transparent', padding: '2px 0',
-                    color: fg, fontSize: 12, cursor: 'pointer'}}, chevron, 'Transkript'),
+                    color: fg, fontSize: 12, cursor: 'pointer'}}, chevron, status === 'partial' ? 'Transkript (unvollständig)' : 'Transkript'),
             open && h('div', {'data-humm': 'transcript-text', style: {fontSize: 14, lineHeight: '20px', whiteSpace: 'pre-wrap',
                 color: 'var(--center-channel-color)', padding: '2px 0 4px 20px'}}, hv.transcript));
     }

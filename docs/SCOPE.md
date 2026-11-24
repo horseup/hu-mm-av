@@ -12,15 +12,15 @@ Status: spike done 2026-11-24 ([SPIKE.md](SPIKE.md)). v0.1 server part built the
 | v1 | Voice and automatic transcription. Round video is phase 2. |
 | Recording | Press and hold the mic in the composer, release to send. Slide away to cancel. Drag up to lock for hands-free recording; when locked, the sender can listen back before sending. A keyboard shortcut can be held to record. |
 | Transcription | Starts automatically after sending. The transcript is written into the post message so mobile users see it. On desktop it sits collapsed under the player. |
-| Speech-to-text | Voxtral Mini 3B on Amazon Bedrock in eu-west-1 (Ireland), through the Converse API, about $0.02 a month at 400 minutes. The browser captures raw PCM while recording and sends 16 kHz WAV chunks of about 30 s, transcribed in parallel. Amazon Transcribe and Frankfurt were ruled out in the spike ([SPIKE.md](SPIKE.md)). The provider sits behind an interface, so an OpenAI-compatible EU endpoint can replace it through config. |
+| Speech-to-text | Voxtral Mini 3B on Amazon Bedrock in eu-west-1 (Ireland), through the Converse API. Live while recording: the browser cuts raw 16 kHz PCM into 3–15 s chunks at pauses, and the server transcribes each one as it arrives. Roughly $0.10–0.20 a month at 400 minutes. Amazon Transcribe and Frankfurt were ruled out in the spike ([SPIKE.md](SPIKE.md)). |
 | Repo | `horseup/hu-mm-av`, public, MIT. No deployment secrets or internal data. All configuration goes through the System Console. |
-| Stack | Go server plugin and a TypeScript/React webapp plugin. Server plugins must be Go, because the Mattermost plugin RPC has no Rust path. The webapp uses React provided by the host, so it is not bundled. Start fresh from `mattermost-plugin-starter-template`. MIT ideas from voice-notes (waveform player) and VoiceClips (circle player) are borrowed with attribution. |
+| Stack | Go server plugin and a plain-JS webapp (no build step; TypeScript is optional later). Server plugins must be Go, because the Mattermost plugin RPC has no Rust path. The webapp uses React provided by the host, so it is not bundled. Written from scratch: no code was taken from voice-notes or VoiceClips. |
 
 ### Performance and footprint
 
 - Record with the browser's native `MediaRecorder` to AAC in MP4 (`.m4a`), with no JS or WASM encoder. Chromium 156 reports `audio/mp4;codecs=mp4a.40.2` as supported. Still to check: Mattermost Desktop's own Chromium. iOS and Android play AAC natively.
-- Compute waveform peaks in the browser while recording (`AnalyserNode`) and store them in post props, so the server never decodes audio.
-- Build the Go binary for `linux-amd64` and `linux-arm64` only, stripped (`-ldflags "-s -w"`). Sign AWS requests with SigV4 and the minimal SDK modules, not the full SDK.
+- Compute 48 waveform peaks in the browser when sending and store them in post props, so the server never decodes audio.
+- Build the Go binary for `linux-amd64` and `linux-arm64` only, stripped (`-ldflags "-s -w"`). Sign AWS requests with the small SigV4 signer, not the full SDK. The binaries are still ~20 MB each, mostly Mattermost's plugin SDK; the bundle is ~14 MB.
 
 ## Feasibility findings
 
@@ -38,13 +38,14 @@ Status: spike done 2026-11-24 ([SPIKE.md](SPIKE.md)). v0.1 server part built the
 | gluckdev/MattermostVoiceClips | MIT, v0.6.0, voice and round video, Go server, claims 7.x to 10.x, 1 star | WebM first (iOS playback risk); unproven on 11.7; its README's mobile recording claim does not match the mobile app |
 | BerziOnline/mattermost-plugin-mediaforge | Apache-2.0, v0.1.2, ffmpeg on the server | Compression plugin; needs ffmpeg on the host |
 
-## Architecture sketch
+## Architecture (as built in v0.1)
 
-1. **Webapp.** The mic button opens the recorder (`MediaRecorder` plus a level meter), which handles the gestures. On send it uploads to the plugin endpoint `POST /plugins/hu-mm-av/api/v1/voice` (multipart audio plus duration and peaks).
-2. **Server.** It checks `create_post` permission, then stores the file with `UploadFile`. It creates a `custom_hu_voice` post with `file_ids`, the placeholder message `🎤 0:42` and props `{duration, peaks, transcript_status: "pending"}`. Then it queues transcription on a bounded worker pool.
-3. **Transcription.** The worker calls the provider and writes the transcript into the message and props. On failure it sets `transcript_status: "failed"` and shows a retry button on desktop.
-4. **Renderer.** Desktop shows the waveform player (seek, 1×/1.5×/2×) with the transcript collapsed under it. Mobile shows the message text and the audio tile.
-5. **Later option.** Auto-transcribe any audio attachment, so voice recorded on mobile through the OS or the upstream PR also gets a transcript.
+1. **Recording (webapp).** Pressing the mic starts `MediaRecorder` (AAC `.m4a`) and an AudioWorklet tap (`public/pcm-tap.js`) on the same source. The tap's PCM is resampled to 16 kHz and cut at pauses into 3–15 s chunks. Chunks without speech are dropped.
+2. **Live transcription (server).** `POST /api/v1/stt/chunk` checks the user and `create_post` permission, transcribes the WAV chunk with Voxtral (SigV4-signed Converse call) and keeps the text in the plugin KV store for 30 minutes. The text goes back to the recorder, which shows it above the waveform.
+3. **Sending.** The browser uploads the `.m4a` through the normal files API, as the user, and waits for any chunks still in flight. It then calls `POST /api/v1/voice` with the file ID, duration, peaks, session and chunk count. The server checks the file is the user's own and unattached in that channel, and joins the chunk texts. It then creates the `custom_hu_voice` post with `🎤 0:42 · <transcript>` as the message, so the transcript is there from the start and the post never shows "Edited".
+4. **Renderer.** Desktop and web show the waveform player (seek, 1×/1.5×/2×) and a collapsible transcript, and hide the core file tiles. Mobile shows the message text and the audio tile.
+5. **Failures.** A failed send keeps the recording in listen-back for a retry. Missing chunks give `transcript_status: "partial"` or `"failed"`.
+6. **Later option.** Auto-transcribe any audio attachment, so voice recorded on mobile through the OS (or the upstream PR) also gets a transcript.
 
 ## Phases
 
@@ -57,14 +58,13 @@ Status: spike done 2026-11-24 ([SPIKE.md](SPIKE.md)). v0.1 server part built the
 
 ## Costs
 
-200 voice messages of about 2 minutes each come to 400 audio minutes a month. With Voxtral Mini 3B on Bedrock eu-west-1, measured token counts and list prices from the AWS Price List API put that at **about $0.02 a month**. [SPIKE.md](SPIKE.md) has the breakdown.
-
-The pre-spike comparison was Amazon Transcribe ($2.40–4.00 a month) and Voxtral Small (about $0.10). EC2 with self-hosted Whisper was rejected because it runs all the time.
+200 voice messages of about 2 minutes each come to 400 audio minutes a month. Voxtral Mini in eu-west-1 costs $0.00005 per 1K tokens. Audio counts as about 375 tokens per 30 s window, and short live chunks seem to be billed a full window. That puts it at **roughly $0.10–0.20 a month**. The pre-spike comparison is in [SPIKE.md](SPIKE.md).
 
 ## Open questions and risks
 
 - **Bedrock data retention.** Bedrock does not share content with model providers. Retention mode `none` (zero data retention) can be set per account or per project through the API; there is no console setting. Check `allowed_modes` for Voxtral and set `none` before production ([data retention](https://docs.aws.amazon.com/bedrock/latest/userguide/data-retention.html), [data protection](https://docs.aws.amazon.com/bedrock/latest/userguide/data-protection.html)).
-- **Silent omissions.** Voxtral drops repeated content, even inside a 30 s chunk. Flag a transcript that is unusually short for its audio length instead of trusting it.
+- **Chunk boundaries.** Short live chunks cut mid-phrase cause errors ("sechs Uhr dreißig" became "6: Um 30") and, once, an invented phrase. Passing the previous chunk's text as context made it worse (the model continued that text), so it was removed. Options: longer minimum chunks, or a final pass over larger segments when sending.
+- **Silent omissions.** Voxtral drops repeated content, even inside a 30 s chunk.
 - **Accuracy varies between runs** at temperature 0, and every test so far used TTS. Real voices need testing.
 - **Composer slot.** The mic sits in the formatting bar and disappears when a user collapses it.
 - **Firefox** cannot record MP4, so it falls back to WebM/Opus, which the iOS app may not play. Options: accept it, block recording in Firefox, or transcode on the server.

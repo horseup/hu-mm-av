@@ -14,7 +14,7 @@ Telegram-style voice messages for [Mattermost](https://mattermost.com). Hold the
 
 ## Install
 
-1. Download the release bundle, or build it with `make bundle` (needs only Docker), then upload it under **System Console → Plugins → Plugin Management**.
+1. Build the bundle with `make bundle` (needs only Docker; there are no releases yet), then upload `dist/de.horseup.mm-av-<version>.tar.gz` under **System Console → Plugins → Plugin Management**.
 2. Enable the plugin and open its settings:
    - **AWS region / Model ID:** the defaults (`eu-west-1`, `mistral.voxtral-mini-3b-2507`) are what was tested. Voxtral did not respond in eu-central-1.
    - **AWS access key ID / secret:** or leave both empty, and the server uses `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` from its environment.
