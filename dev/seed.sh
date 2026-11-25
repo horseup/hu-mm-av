@@ -2,7 +2,7 @@
 # Seeds the local dev Mattermost (dev/docker-compose.yml) with an admin, a second
 # user and a team. Dev-only credentials for http://localhost:8065; never reuse them.
 set -eu
-C="${MM_CONTAINER:-hu-mm-av-mattermost-1}"
+C="${MM_CONTAINER:-voice-messages-dev-mattermost-1}"
 PASS="${MM_DEV_PASSWORD:-DevOnly-Voice-2026!}"
 mm() { docker exec "$C" mmctl --local "$@"; }
 

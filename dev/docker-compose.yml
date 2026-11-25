@@ -1,6 +1,8 @@
 # Local Mattermost for plugin development. Not for production use.
 # Start:  docker compose -f dev/docker-compose.yml up -d
 # Open:   http://localhost:8065
+name: voice-messages-dev
+
 services:
   postgres:
     image: postgres:16-alpine

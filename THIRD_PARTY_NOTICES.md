@@ -1,6 +1,6 @@
 # Third-party notices
 
-The hu-mm-av server binary is built from the Go modules below. Each keeps its own license. The release bundle
+The server binary is built from the Go modules below. Each keeps its own license. The release bundle
 contains every license and NOTICE file in `third_party/`, collected with `go-licenses save`. The MPL-2.0 modules
 are used unmodified; their source is available at the links below.
 

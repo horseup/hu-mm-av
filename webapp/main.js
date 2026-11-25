@@ -1,4 +1,4 @@
-// hu-mm-av webapp: hold-to-record voice messages in the Mattermost composer, live transcription while
+// Voice messages webapp: hold-to-record voice messages in the Mattermost composer, live transcription while
 // recording, and an inline waveform player with a collapsible transcript. Plain JS, no build step.
 (function () {
     'use strict';
@@ -9,7 +9,85 @@
     const MIN_MS = 500; // shorter press = tap, show hint
     const SLIDE_PX = 60;
     const S = window.__humm = window.__humm || {events: []};
-    const log = (e, x) => { S.events.push({t: Date.now(), e, ...(x || {})}); if (S.events.length > 200) S.events.shift(); console.debug('[hu-mm-av]', e, x || ''); };
+    const log = (e, x) => { S.events.push({t: Date.now(), e, ...(x || {})}); if (S.events.length > 200) S.events.shift(); console.debug('[voice-messages]', e, x || ''); };
+
+    // UI text. English is the default; TRANSLATIONS holds other languages by Mattermost locale code. They are
+    // registered with registry.registerTranslations, so each user sees the language set in their Mattermost
+    // settings. To add a language, copy the de block, translate every value, and keep the keys.
+    const TEXT = {
+        seek: 'Position',
+        pause: 'Pause',
+        listen: 'Listen',
+        play: 'Play',
+        speed: 'Playback speed',
+        keyHint: 'Release to send · Esc to cancel',
+        slideHint: 'Slide left to cancel',
+        releaseToDiscard: 'Release to discard',
+        discard: 'Discard',
+        discardRecording: 'Discard recording',
+        stopAndListen: 'Stop & listen',
+        stopAndListenLabel: 'Stop and listen',
+        send: 'Send',
+        liveWaiting: 'The transcript appears as you speak …',
+        liveTranscribing: 'Transcribing …',
+        noTranscript: 'No transcript',
+        sendFailedRetry: 'Sending failed. Your recording is still here: press Enter to try again.',
+        sendFailed: 'Sending failed',
+        tapHint: 'Hold to record',
+        micLabel: 'Record a voice message (press and hold)',
+        sending: 'Sending',
+        micTooltip: 'Hold to record',
+        transcriptPending: 'Transcribing …',
+        transcriptFailed: 'Transcript not available',
+        transcriptPartial: 'Transcript (incomplete)',
+        transcript: 'Transcript',
+    };
+    const TRANSLATIONS = {
+        de: {
+            seek: 'Position',
+            pause: 'Pause',
+            listen: 'Anhören',
+            play: 'Abspielen',
+            speed: 'Wiedergabegeschwindigkeit',
+            keyHint: 'Loslassen: senden · Esc: abbrechen',
+            slideHint: 'Nach links: abbrechen',
+            releaseToDiscard: 'Loslassen zum Verwerfen',
+            discard: 'Verwerfen',
+            discardRecording: 'Aufnahme verwerfen',
+            stopAndListen: 'Stoppen & anhören',
+            stopAndListenLabel: 'Stoppen und anhören',
+            send: 'Senden',
+            liveWaiting: 'Transkript erscheint beim Sprechen …',
+            liveTranscribing: 'Wird transkribiert …',
+            noTranscript: 'Kein Transkript',
+            sendFailedRetry: 'Senden fehlgeschlagen. Die Aufnahme ist noch da: Enter versucht es erneut.',
+            sendFailed: 'Senden fehlgeschlagen',
+            tapHint: 'Zum Aufnehmen gedrückt halten',
+            micLabel: 'Sprachnachricht aufnehmen (gedrückt halten)',
+            sending: 'Wird gesendet',
+            micTooltip: 'Gedrückt halten zum Aufnehmen',
+            transcriptPending: 'Transkript wird erstellt …',
+            transcriptFailed: 'Transkript nicht verfügbar',
+            transcriptPartial: 'Transkript (unvollständig)',
+            transcript: 'Transkript',
+        },
+    };
+    const textId = (key) => PLUGIN_ID + '.' + key;
+    const translationsFor = (locale) => {
+        const lang = TRANSLATIONS[String(locale || '').toLowerCase().split(/[-_]/)[0]] || {};
+        return Object.fromEntries(Object.entries(lang).map(([key, value]) => [textId(key), value]));
+    };
+    // useText returns t(key). It reads Mattermost's react-intl context without requiring it, so a component rendered
+    // outside the provider falls back to English instead of throwing.
+    const FALLBACK_CONTEXT = React.createContext(null);
+    function useText() {
+        const RI = window.ReactIntl;
+        const intl = React.useContext(RI && RI.IntlContext ? RI.IntlContext : FALLBACK_CONTEXT);
+        return (key) => {
+            if (!intl) return TEXT[key];
+            try { return intl.formatMessage({id: textId(key), defaultMessage: TEXT[key]}); } catch (e) { return TEXT[key]; }
+        };
+    }
 
     const csrf = () => (document.cookie.match(/MMCSRF=([^;]+)/) || [])[1] || '';
     async function request(url, opts = {}) {
@@ -489,11 +567,12 @@
 
     // Bars fill with the accent colour as playback passes them; clicking a bar seeks there.
     function Waveform({peaks, progress, onSeek, height = 28}) {
+        const t = useText();
         const loading = !(peaks && peaks.length);
         const bars = loading ? new Array(PEAK_BARS).fill(14) : peaks;
         const n = bars.length;
         const seek = (e) => { if (!onSeek) return; const r = e.currentTarget.getBoundingClientRect(); onSeek(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))); };
-        return h('div', {'data-humm': 'seek', role: 'slider', 'aria-label': 'Position', 'aria-valuemin': 0, 'aria-valuemax': 100,
+        return h('div', {'data-humm': 'seek', role: 'slider', 'aria-label': t('seek'), 'aria-valuemin': 0, 'aria-valuemax': 100,
             'aria-valuenow': Math.round(progress * 100), onClick: seek,
             style: {flex: 'none', width: n * 5 - 2, height, display: 'flex', alignItems: 'center', gap: 2, cursor: onSeek ? 'pointer' : 'default', opacity: loading ? 0.5 : 1}},
         bars.map((v, i) => h('div', {key: i, style: {width: 3, flex: 'none', borderRadius: 2, height: Math.max(3, Math.round((v / 100) * height)),
@@ -512,6 +591,7 @@
     }
 
     function PreviewPlayer({url, ms, peaks}) {
+        const t = useText();
         const ref = React.useRef(null);
         const [playing, setPlaying] = React.useState(false);
         const [pos, setPos] = React.useState(0);
@@ -527,12 +607,13 @@
         const onSeek = (ratio) => { ref.current.currentTime = ratio * dur; setPos(ratio * dur); };
         return h('div', {style: {flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 10}},
             h('audio', {ref, src: url, preload: 'auto'}),
-            h('button', {type: 'button', 'data-humm': 'preview-play', 'aria-label': playing ? 'Pause' : 'Anhören', onClick: toggle, style: circleBtn('rgba(var(--center-channel-color-rgb), 0.08)', 'var(--center-channel-color)')}, icon(playing ? 'pause' : 'play', 16)),
+            h('button', {type: 'button', 'data-humm': 'preview-play', 'aria-label': playing ? t('pause') : t('listen'), onClick: toggle, style: circleBtn('rgba(var(--center-channel-color-rgb), 0.08)', 'var(--center-channel-color)')}, icon(playing ? 'pause' : 'play', 16)),
             h(Waveform, {peaks, progress: dur ? Math.min(1, pos / dur) : 0, onSeek}),
             h('span', {style: {fontSize: 12, color: muted, fontVariantNumeric: 'tabular-nums', flex: 'none'}}, fmt((playing || pos > 0 ? pos : dur) * 1000)));
     }
 
     function MicButton(props) {
+        const t = useText();
         const [mode, setModeState] = React.useState('idle'); // idle | recording | cancel | locked | preview | hint
         const [elapsed, setElapsed] = React.useState(0);
         const [levels, setLevels] = React.useState([]);
@@ -696,25 +777,25 @@
         let bar = null;
         if (mode === 'recording' && via === 'key') {
             bar = [h(Timer, {key: 't', ms: elapsed, blink: true}),
-                h('span', {key: 'c', 'data-humm': 'key-hint', style: {flex: 'none', fontSize: 13, color: muted}}, 'Loslassen: senden · Esc: abbrechen'),
+                h('span', {key: 'c', 'data-humm': 'key-hint', style: {flex: 'none', fontSize: 13, color: muted}}, t('keyHint')),
                 h(LevelBars, {key: 'l', levels, color: RED})];
         } else if (mode === 'recording') {
             bar = [h(Timer, {key: 't', ms: elapsed, blink: true}),
                 h('span', {key: 'c', 'data-humm': 'slide-hint', style: {display: 'inline-flex', alignItems: 'center', gap: 2, flex: 'none', fontSize: 13, color: muted}},
-                    h('span', {'data-humm-anim': 'nudge', style: {animation: 'humm-nudge 1.2s ease-in-out infinite'}}, icon('chevL', 16)), 'Nach links: abbrechen'),
+                    h('span', {'data-humm-anim': 'nudge', style: {animation: 'humm-nudge 1.2s ease-in-out infinite'}}, icon('chevL', 16)), t('slideHint')),
                 h(LevelBars, {key: 'l', levels, color: RED})];
         } else if (mode === 'cancel') {
-            bar = [h('span', {key: 'c', style: {display: 'inline-flex', alignItems: 'center', gap: 8, color: RED, fontSize: 14, fontWeight: 600}}, icon('trash', 18), 'Loslassen zum Verwerfen'),
+            bar = [h('span', {key: 'c', style: {display: 'inline-flex', alignItems: 'center', gap: 8, color: RED, fontSize: 14, fontWeight: 600}}, icon('trash', 18), t('releaseToDiscard')),
                 h('span', {key: 's', style: {flex: 1}}), h(Timer, {key: 't', ms: elapsed, blink: false})];
         } else if (mode === 'locked') {
-            bar = [h(WithTooltip, {key: 'x', label: 'Verwerfen', keys: SHORTCUTS.cancel}, h('button', {type: 'button', 'data-humm': 'cancel', 'aria-label': 'Aufnahme verwerfen', 'aria-keyshortcuts': 'Escape', onClick: discard, style: circleBtn('rgba(var(--center-channel-color-rgb), 0.08)', 'var(--center-channel-color)')}, icon('x', 16))),
+            bar = [h(WithTooltip, {key: 'x', label: t('discard'), keys: SHORTCUTS.cancel}, h('button', {type: 'button', 'data-humm': 'cancel', 'aria-label': t('discardRecording'), 'aria-keyshortcuts': 'Escape', onClick: discard, style: circleBtn('rgba(var(--center-channel-color-rgb), 0.08)', 'var(--center-channel-color)')}, icon('x', 16))),
                 h(Timer, {key: 't', ms: elapsed, blink: true}), h(LevelBars, {key: 'l', levels, color: RED}),
-                h(WithTooltip, {key: 'p', label: 'Stoppen & anhören', keys: SHORTCUTS.stop}, h('button', {type: 'button', 'data-humm': 'listen', 'aria-label': 'Stoppen und anhören', 'aria-keyshortcuts': IS_MAC ? 'Meta+S' : 'Control+S', onClick: stopToPreview, style: actionBtn('rgba(210, 75, 78, 0.12)', RED)}, icon('stop', 26))),
-                h(WithTooltip, {key: 's', label: 'Senden', keys: SHORTCUTS.send}, h('button', {type: 'button', 'data-humm': 'send', 'aria-label': 'Senden', 'aria-keyshortcuts': 'Enter', onClick: stopAndSend, style: actionBtn('var(--button-bg)', 'var(--button-color)')}, sendIcon()))];
+                h(WithTooltip, {key: 'p', label: t('stopAndListen'), keys: SHORTCUTS.stop}, h('button', {type: 'button', 'data-humm': 'listen', 'aria-label': t('stopAndListenLabel'), 'aria-keyshortcuts': IS_MAC ? 'Meta+S' : 'Control+S', onClick: stopToPreview, style: actionBtn('rgba(210, 75, 78, 0.12)', RED)}, icon('stop', 26))),
+                h(WithTooltip, {key: 's', label: t('send'), keys: SHORTCUTS.send}, h('button', {type: 'button', 'data-humm': 'send', 'aria-label': t('send'), 'aria-keyshortcuts': 'Enter', onClick: stopAndSend, style: actionBtn('var(--button-bg)', 'var(--button-color)')}, sendIcon()))];
         } else if (mode === 'preview') {
-            bar = [h(WithTooltip, {key: 'x', label: 'Verwerfen', keys: SHORTCUTS.cancel}, h('button', {type: 'button', 'data-humm': 'cancel', 'aria-label': 'Aufnahme verwerfen', 'aria-keyshortcuts': 'Escape', onClick: discardPreview, style: circleBtn('rgba(var(--center-channel-color-rgb), 0.08)', 'var(--center-channel-color)')}, icon('x', 16))),
+            bar = [h(WithTooltip, {key: 'x', label: t('discard'), keys: SHORTCUTS.cancel}, h('button', {type: 'button', 'data-humm': 'cancel', 'aria-label': t('discardRecording'), 'aria-keyshortcuts': 'Escape', onClick: discardPreview, style: circleBtn('rgba(var(--center-channel-color-rgb), 0.08)', 'var(--center-channel-color)')}, icon('x', 16))),
                 h(PreviewPlayer, {key: 'pp', url: previewRef.current.url, ms: previewRef.current.ms, peaks: previewRef.current.peaks}),
-                h(WithTooltip, {key: 's', label: 'Senden', keys: SHORTCUTS.send}, h('button', {type: 'button', 'data-humm': 'send', 'aria-label': 'Senden', 'aria-keyshortcuts': 'Enter', onClick: sendPreview, style: actionBtn('var(--button-bg)', 'var(--button-color)')}, sendIcon()))];
+                h(WithTooltip, {key: 's', label: t('send'), keys: SHORTCUTS.send}, h('button', {type: 'button', 'data-humm': 'send', 'aria-label': t('send'), 'aria-keyshortcuts': 'Enter', onClick: sendPreview, style: actionBtn('var(--button-bg)', 'var(--button-color)')}, sendIcon()))];
         }
 
         const overlays = [];
@@ -725,12 +806,12 @@
             // Live transcript above the controls; newest words at the bottom, older lines scroll out at the top.
             const showText = liveEnabled && (mode === 'recording' || mode === 'locked' || mode === 'preview');
             const textHeight = editorRect.height >= 86 ? 36 : 18;
-            let placeholder = 'Transkript erscheint beim Sprechen …';
-            if (live.pending && !live.text) placeholder = 'Wird transkribiert …';
-            else if (mode === 'preview' && !live.text) placeholder = 'Kein Transkript';
+            let placeholder = t('liveWaiting');
+            if (live.pending && !live.text) placeholder = t('liveTranscribing');
+            else if (mode === 'preview' && !live.text) placeholder = t('noTranscript');
             const showError = sendError && mode === 'preview';
             const textRow = showError ? h('div', {key: 'err', 'data-humm': 'send-error', role: 'alert', style: {height: textHeight, display: 'flex', alignItems: 'flex-end', fontSize: 13, lineHeight: '18px', color: RED}},
-                'Senden fehlgeschlagen. Die Aufnahme ist noch da: Enter versucht es erneut.') : showText && h('div', {key: 'txt', 'data-humm': 'live-text', 'aria-live': 'polite', style: {height: textHeight, overflow: 'hidden', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end',
+                t('sendFailedRetry')) : showText && h('div', {key: 'txt', 'data-humm': 'live-text', 'aria-live': 'polite', style: {height: textHeight, overflow: 'hidden', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end',
                 fontSize: 13, lineHeight: '18px', color: live.text ? 'var(--center-channel-color)' : muted, fontStyle: live.text ? 'normal' : 'italic'}},
             h('div', null, live.text || placeholder, live.text && live.pending ? h('span', {style: {color: muted}}, ' …') : null));
             overlays.push(h('div', {key: 'bar', 'data-humm': 'recorder', 'data-humm-mode-bar': mode, style: {position: 'fixed', zIndex: 1000,
@@ -756,15 +837,15 @@
             overlays.push(h('div', {key: 'hint', 'data-humm': 'hold-hint', style: {position: 'fixed', zIndex: 1001, pointerEvents: 'none', left: micRect.left + micRect.width / 2, top: micRect.top - 8,
                 transform: 'translate(-50%, -100%)', whiteSpace: 'nowrap', fontSize: 12, padding: '4px 8px', borderRadius: 4,
                 background: mode === 'error' ? RED : 'var(--center-channel-color)', color: mode === 'error' ? '#fff' : 'var(--center-channel-bg)'}},
-            mode === 'error' ? 'Senden fehlgeschlagen' : 'Zum Aufnehmen gedrückt halten'));
+            mode === 'error' ? t('sendFailed') : t('tapHint')));
         }
 
-        const micButton = h('button', {type: 'button', ref: setBtnEl, className: 'humm-mic', 'aria-label': 'Sprachnachricht aufnehmen (gedrückt halten)', 'aria-keyshortcuts': 'Alt+Shift+V', 'data-humm': 'mic',
+        const micButton = h('button', {type: 'button', ref: setBtnEl, className: 'humm-mic', 'aria-label': t('micLabel'), 'aria-keyshortcuts': 'Alt+Shift+V', 'data-humm': 'mic',
             disabled: mode === 'sending', onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp},
-        mode === 'sending' ? h('span', {'data-humm-anim': 'spin', 'aria-label': 'Wird gesendet', style: {width: 14, height: 14, borderRadius: '50%', border: '2px solid currentColor', borderTopColor: 'transparent', animation: 'humm-spin 0.8s linear infinite'}}) : icon('mic', 18));
+        mode === 'sending' ? h('span', {'data-humm-anim': 'spin', 'aria-label': t('sending'), style: {width: 14, height: 14, borderRadius: '50%', border: '2px solid currentColor', borderTopColor: 'transparent', animation: 'humm-spin 0.8s linear infinite'}}) : icon('mic', 18));
         return h('span', {style: {display: 'inline-flex', alignItems: 'center'}, 'data-humm-mode': mode},
             // Same element tree in every mode, so the button is never remounted mid-press.
-            h(WithTooltip, {label: 'Gedrückt halten zum Aufnehmen', keys: SHORTCUTS.record, disabled: mode !== 'idle'}, micButton),
+            h(WithTooltip, {label: t('micTooltip'), keys: SHORTCUTS.record, disabled: mode !== 'idle'}, micButton),
             overlays.length ? window.ReactDOM.createPortal(overlays, document.body) : null);
     }
 
@@ -774,6 +855,7 @@
     const peakCache = new Map(); // fileId -> peaks, for posts without stored peaks
     const RATES = [1, 1.5, 2];
     function VoicePost(props) {
+        const t = useText();
         const post = props.post;
         const ids = post.file_ids || [];
         const files = window.ReactRedux.useSelector((st) => ids.map((id) => st.entities.files.files[id]).filter(Boolean), window.ReactRedux.shallowEqual);
@@ -846,14 +928,14 @@
         return h('div', {'data-humm': 'voice-post', style: {display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 420}},
             h('audio', {ref: audioRef, preload: 'metadata', src: `/api/v4/files/${fileId}`}),
             h('div', {style: {display: 'flex', alignItems: 'center', gap: 10}},
-                h('button', {type: 'button', 'data-humm': 'play', 'aria-label': playing ? 'Pause' : 'Abspielen', onClick: toggle,
+                h('button', {type: 'button', 'data-humm': 'play', 'aria-label': playing ? t('pause') : t('play'), onClick: toggle,
                     style: {width: 36, height: 36, borderRadius: '50%', border: 0, flex: 'none', cursor: 'pointer',
                         background: 'var(--button-bg)', color: 'var(--button-color)', padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center'}},
                 icon(playing ? 'pause' : 'play', 16)),
                 h(Waveform, {peaks, progress, onSeek}),
                 h('span', {'data-humm': 'time', style: {fontSize: 12, color: fg, fontVariantNumeric: 'tabular-nums', flex: 'none'}},
                     playing || pos > 0 ? fmt(pos * 1000) : fmt(dur * 1000)),
-                h('button', {type: 'button', 'data-humm': 'rate', onClick: cycleRate, 'aria-label': 'Wiedergabegeschwindigkeit',
+                h('button', {type: 'button', 'data-humm': 'rate', onClick: cycleRate, 'aria-label': t('speed'),
                     style: {border: `1px solid ${fg}`, borderRadius: 10, background: 'transparent', color: fg, fontSize: 11, padding: '0 6px', cursor: 'pointer', flex: 'none'}},
                 `${rate}×`)),
             h(TranscriptRow, {post, fg}));
@@ -863,12 +945,13 @@
     // into post.message for mobile). Expanded state survives the post list re-mounting rows.
     const expandedPosts = new Set();
     function TranscriptRow({post, fg}) {
+        const t = useText();
         const hv = (post.props || {}).hu_voice || {};
         const status = hv.transcript_status || (hv.transcript ? 'done' : 'none');
         const [open, setOpen] = React.useState(expandedPosts.has(post.id));
         const muted = {fontSize: 12, color: fg, fontStyle: 'italic'};
-        if (status === 'pending') return h('div', {'data-humm': 'transcript-pending', style: muted}, 'Transkript wird erstellt …');
-        if (status === 'failed') return h('div', {'data-humm': 'transcript-failed', style: muted}, 'Transkript nicht verfügbar');
+        if (status === 'pending') return h('div', {'data-humm': 'transcript-pending', style: muted}, t('transcriptPending'));
+        if (status === 'failed') return h('div', {'data-humm': 'transcript-failed', style: muted}, t('transcriptFailed'));
         if ((status !== 'done' && status !== 'partial') || !hv.transcript) return null;
         const toggle = () => { const next = !open; if (next) expandedPosts.add(post.id); else expandedPosts.delete(post.id); setOpen(next); };
         const chevron = h('svg', {width: 16, height: 16, viewBox: '0 0 24 24', 'aria-hidden': true,
@@ -877,7 +960,7 @@
         return h('div', {'data-humm': 'transcript'},
             h('button', {type: 'button', 'data-humm': 'transcript-toggle', 'aria-expanded': open, onClick: toggle,
                 style: {display: 'inline-flex', alignItems: 'center', gap: 4, border: 0, background: 'transparent', padding: '2px 0',
-                    color: fg, fontSize: 12, cursor: 'pointer'}}, chevron, status === 'partial' ? 'Transkript (unvollständig)' : 'Transkript'),
+                    color: fg, fontSize: 12, cursor: 'pointer'}}, chevron, status === 'partial' ? t('transcriptPartial') : t('transcript')),
             open && h('div', {'data-humm': 'transcript-text', style: {fontSize: 14, lineHeight: '20px', whiteSpace: 'pre-wrap',
                 color: 'var(--center-channel-color)', padding: '2px 0 4px 20px'}}, hv.transcript));
     }
@@ -901,6 +984,7 @@
         initialize(registry) {
             registry.registerPostEditorActionComponent(MicButton);
             registry.registerPostTypeComponent('custom_hu_voice', VoicePost);
+            if (registry.registerTranslations) registry.registerTranslations(translationsFor);
             if (!document.getElementById(STYLE_ID)) {
                 const style = document.createElement('style'); style.id = STYLE_ID; style.textContent = CSS;
                 document.head.appendChild(style);

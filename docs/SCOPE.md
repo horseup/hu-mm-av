@@ -1,4 +1,4 @@
-# hu-mm-av: scope
+# Voice messages for Mattermost: scope
 
 Telegram-style voice messages for Mattermost, with automatic transcription. Round video messages follow in phase 2.
 
@@ -13,7 +13,7 @@ Status: spike done 2026-11-24 ([SPIKE.md](SPIKE.md)). v0.1 server part built the
 | Recording | Press and hold the mic in the composer, release to send. Slide away to cancel. Drag up to lock for hands-free recording; when locked, the sender can listen back before sending. A keyboard shortcut can be held to record. |
 | Transcription | Starts automatically after sending. The transcript is written into the post message so mobile users see it. On desktop it sits collapsed under the player. |
 | Speech-to-text | Voxtral Mini 3B on Amazon Bedrock in eu-west-1 (Ireland), through the Converse API. Live while recording: the browser cuts raw 16 kHz PCM into 3–15 s chunks at pauses, and the server transcribes each one as it arrives. Roughly $0.10–0.20 a month at 400 minutes. Amazon Transcribe and Frankfurt were ruled out in the spike ([SPIKE.md](SPIKE.md)). |
-| Repo | `horseup/hu-mm-av`, public, MIT. No deployment secrets or internal data. All configuration goes through the System Console. |
+| Repo | `horseup/mattermost-plugin-voice-messages` (named `hu-mm-av` until v0.2.0), public, MIT. No deployment secrets or internal data. All configuration goes through the System Console. |
 | Stack | Go server plugin and a plain-JS webapp (no build step; TypeScript is optional later). Server plugins must be Go, because the Mattermost plugin RPC has no Rust path. The webapp uses React provided by the host, so it is not bundled. Written from scratch: no code was taken from voice-notes or VoiceClips. |
 
 ### Performance and footprint

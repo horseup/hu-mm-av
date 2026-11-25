@@ -1,4 +1,4 @@
-module github.com/horseup/hu-mm-av/server
+module github.com/horseup/mattermost-plugin-voice-messages/server
 
 go 1.26.10
 

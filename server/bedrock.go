@@ -123,12 +123,34 @@ var timestampPattern = regexp.MustCompile(`\[\d{1,2}:\d{2}(?::\d{2})?\]\s*`)
 // language ("[keine Rede]", which Mini answered for a German-accented English clip) or "[Musik]".
 var markerPattern = regexp.MustCompile(`^\[[^\]]{1,40}\]\.?$`)
 
-// notTranscripts are answers that are the model talking, not the speaker: the prompt read back, or a chat
-// refusal. Both came back for noise in testing.
-var notTranscripts = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)write the transcript in|transcribe this voice message|never translate, correct`),
-	regexp.MustCompile(`(?i)^(i'm|i am) sorry, (but )?i (can't|cannot) (help|assist) with (that|this)\.?$`),
+// promptPhrases are phrases of the transcription prompt. For noise, the model sometimes read the prompt back,
+// starting at its second sentence ("The speaker speaks English; write the transcript in English. Keep the
+// speaker's exact words ..."). An answer with two or more of them is the prompt; a speaker who says one of them
+// ("can you transcribe this voice message?") is kept.
+var promptPhrases = []string{
+	"transcribe this voice message",
+	"the speaker speaks",
+	"write the transcript in",
+	"keep the speaker's exact words",
+	"never translate, correct",
+	"output exactly [no speech]",
+	"output only the transcript",
 }
+
+// isPromptEcho reports whether s contains at least two different prompt phrases.
+func isPromptEcho(s string) bool {
+	s = strings.ToLower(strings.ReplaceAll(s, "’", "'"))
+	found := 0
+	for _, p := range promptPhrases {
+		if strings.Contains(s, p) {
+			found++
+		}
+	}
+	return found >= 2
+}
+
+// chatRefusal is the model refusing as a chat assistant instead of transcribing. It came back for noise in testing.
+var chatRefusal = regexp.MustCompile(`(?i)^(i'm|i am) sorry, (but )?i (can't|cannot) (help|assist) with (that|this)\.?$`)
 
 // cleanTranscript trims whitespace and quotation marks the model sometimes wraps the whole answer in, and turns
 // the no-speech marker, other bracketed notes and answers that are not a transcript into an empty transcript.
@@ -138,10 +160,8 @@ func cleanTranscript(s string) string {
 		markerPattern.MatchString(s) {
 		return ""
 	}
-	for _, re := range notTranscripts {
-		if re.MatchString(strings.Trim(s, `"“”„«» `)) {
-			return ""
-		}
+	if isPromptEcho(s) || chatRefusal.MatchString(strings.Trim(s, `"“”„«» `)) {
+		return ""
 	}
 	for _, q := range [][2]string{{`"`, `"`}, {"„", "“"}, {"“", "”"}, {"«", "»"}, {"»", "«"}} {
 		if len(s) > len(q[0])+len(q[1]) && strings.HasPrefix(s, q[0]) && strings.HasSuffix(s, q[1]) &&

@@ -217,7 +217,12 @@ func TestCleanTranscriptStripsWrappingQuotes(t *testing.T) {
 		"[Name] kommt morgen.":               "[Name] kommt morgen.",
 		"I'm sorry, I can't help with that.": "",
 		"I'm sorry, I can't make it today.":  "I'm sorry, I can't make it today.",
-		"The speaker speaks English; write the transcript in English. Keep the speaker's exact words": "",
+		"The speaker speaks English; write the transcript in English. Keep the speaker's exact words":        "",
+		"Transcribe this voice message verbatim. The speaker speaks German; write the transcript in German.": "",
+		"Keep the speaker’s exact words, grammar and form of address. Output only the transcript.":           "",
+		"Can you transcribe this voice message for me?":                                                      "Can you transcribe this voice message for me?",
+		"Transcribe this voice message and send it to Anna, please.":                                         "Transcribe this voice message and send it to Anna, please.",
+		"The speaker speaks too fast, please slow down.":                                                     "The speaker speaks too fast, please slow down.",
 	}
 	for in, want := range cases {
 		if got := cleanTranscript(in); got != want {

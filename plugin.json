@@ -2,10 +2,10 @@
   "id": "de.horseup.mm-av",
   "name": "Voice messages",
   "description": "Telegram-style voice messages: hold to record, release to send, with automatic transcripts.",
-  "homepage_url": "https://github.com/horseup/hu-mm-av",
-  "support_url": "https://github.com/horseup/hu-mm-av/issues",
+  "homepage_url": "https://github.com/horseup/mattermost-plugin-voice-messages",
+  "support_url": "https://github.com/horseup/mattermost-plugin-voice-messages/issues",
   "icon_path": "assets/icon.svg",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "min_server_version": "11.7.0",
   "server": {
     "executables": {
@@ -57,8 +57,8 @@
         "key": "LanguageHint",
         "display_name": "Fallback language",
         "type": "text",
-        "default": "German",
-        "help_text": "The model first names the spoken language and transcribes in it. This language is used only when it cannot name one. Write it in English, for example German."
+        "default": "English",
+        "help_text": "The model first names the spoken language and transcribes in it. This language is used only when it cannot name one. Write the language's English name, for example German."
       },
       {
         "key": "MaxDurationSeconds",

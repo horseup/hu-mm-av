@@ -1,0 +1,57 @@
+name: Bug report
+description: Something doesn't work as described in the README.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please don't attach real voice recordings or transcripts of other people, or other personal data. For security problems, follow SECURITY.md instead.
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: input
+    id: mattermost-version
+    attributes:
+      label: Mattermost server version and edition
+      placeholder: "11.7.11 Team Edition"
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: Where it happens
+      description: Desktop app, browser, or mobile app, with version and operating system.
+      placeholder: "Desktop app 6.1 on macOS 26"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Hold the mic in a channel
+        2. ...
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Server log lines that mention de.horseup.mm-av (System Console → Server Logs), and errors from the browser console. Remove anything personal.
+      render: text
+  - type: dropdown
+    id: transcription
+    attributes:
+      label: Transcripts
+      options:
+        - Turned on, with AWS credentials
+        - Turned off or no AWS credentials
