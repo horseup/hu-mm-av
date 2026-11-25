@@ -8,7 +8,7 @@ Telegram-style voice messages for [Mattermost](https://mattermost.com). Hold the
 
 - **Recording (desktop app and web).** Press and hold the mic in the composer, then release to send. Slide left to cancel. Drag up to lock for hands-free recording; then ✕ cancels, stop lets you listen back, and send sends. Shortcuts while locked: Esc cancels, ⌘S / Ctrl+S stops and plays back, Enter sends.
 - **Keyboard.** Hold **⌥⇧V** (Alt+Shift+V) to record and let go to send; Esc while holding cancels. A short tap starts a hands-free recording; tap again or press Enter to send. The composer with focus gets the recording (a thread or the channel); with none focused, the channel composer does. Switching to another window while holding locks the recording instead of sending it.
-- **Live transcript.** While you talk, audio goes to the server in chunks cut at pauses, and the text appears above the waveform about a second behind you. When you send, the transcript is already in the message. That's why mobile users see it, and why the post never shows "Edited".
+- **Live transcript.** While you talk, audio goes to the server in chunks cut at pauses, and the text appears above the waveform a second or two behind you. Each chunk is written down in the language that is spoken, never translated: the model first names the language, then transcribes in it. When you send, the transcript is already in the message. That's why mobile users see it, and why the post never shows "Edited".
 - **Player.** A waveform you can click to seek, 1×/1.5×/2× speed, one message playing at a time, and the transcript under a chevron.
 - **Small files.** The browser's own encoder records AAC (`.m4a`), so the plugin ships no encoder, and the files play everywhere, including the Mattermost mobile apps. The browser writes the recording in fragments without a total length; before upload the plugin rewrites it as a regular `.m4a` (audio bytes unchanged), so every player shows the right length and can seek.
 - **Mobile.** The mobile apps play voice messages and show the transcript as the message text. They cannot record: Mattermost mobile does not run plugin UI.
@@ -17,9 +17,9 @@ Telegram-style voice messages for [Mattermost](https://mattermost.com). Hold the
 
 1. Build the bundle with `make bundle` (needs only Docker; there are no releases yet), then upload `dist/de.horseup.mm-av-<version>.tar.gz` under **System Console → Plugins → Plugin Management**.
 2. Enable the plugin and open its settings:
-   - **AWS region / Model ID:** the defaults (`eu-west-1`, `mistral.voxtral-mini-3b-2507`) are what was tested. Voxtral did not respond in eu-central-1.
+   - **AWS region / Model ID:** the defaults (`eu-west-1`, `mistral.voxtral-small-24b-2507`) are what was tested. Voxtral did not respond in eu-central-1. Voxtral Mini (`mistral.voxtral-mini-3b-2507`) is cheaper, but it often answered in the wrong language and invented text for background noise.
    - **AWS access key ID / secret:** or leave both empty, and the server uses `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` from its environment.
-   - **Most likely language:** helps with short clips. Other languages are still transcribed as spoken, never translated.
+   - **Fallback language:** used only when the model cannot name the spoken language. Default `German`.
 3. Give the key only this permission:
 
 ```json
@@ -28,7 +28,7 @@ Telegram-style voice messages for [Mattermost](https://mattermost.com). Hold the
   "Statement": [{
     "Effect": "Allow",
     "Action": "bedrock:InvokeModel",
-    "Resource": "arn:aws:bedrock:eu-west-1::foundation-model/mistral.voxtral-mini-3b-2507"
+    "Resource": "arn:aws:bedrock:eu-west-1::foundation-model/mistral.voxtral-small-24b-2507"
   }]
 }
 ```
@@ -37,11 +37,11 @@ Telegram-style voice messages for [Mattermost](https://mattermost.com). Hold the
 
 ### What leaves your server
 
-Only the speech-to-text request: 16 kHz WAV chunks of 3–15 s, sent to Amazon Bedrock in the region you configure. The voice file itself stays in Mattermost's file storage. Chunks without speech are never sent.
+Only the speech-to-text requests: 16 kHz WAV chunks of 3–15 s, each sent twice to Amazon Bedrock in the region you configure (once to name the language, once to transcribe). The voice file itself stays in Mattermost's file storage. Chunks the browser recognizes as silent are never sent.
 
 ### Cost
 
-Voxtral Mini is billed per token at $0.00005 per 1K in eu-west-1. Audio counts as about 375 tokens per 30 s window, and short chunks seem to be billed a full window. 400 minutes a month come to roughly $0.10–0.20.
+Voxtral Small is billed per token in eu-west-1: $0.12 per 1M input tokens and $0.35 per 1M output tokens. Each request counts about 400 input tokens per chunk of up to 30 s, and every chunk needs two requests. 400 minutes a month come to roughly $0.30–0.50.
 
 ## Development
 

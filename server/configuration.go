@@ -9,7 +9,7 @@ import (
 
 const (
 	defaultRegion      = "eu-west-1"
-	defaultModelID     = "mistral.voxtral-mini-3b-2507"
+	defaultModelID     = "mistral.voxtral-small-24b-2507"
 	defaultMaxDuration = 300
 )
 

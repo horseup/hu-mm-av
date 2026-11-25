@@ -54,6 +54,30 @@ Voxtral Mini 3B standard: $0.00005 per 1K input tokens and $0.00005 per 1K outpu
 - output ≈ 106K tokens, about $0.005
 - total **about $0.02 a month**
 
+## Follow-up: the transcript came out in the wrong language (v0.1.4)
+
+In production, English voice messages were transcribed in German. The prompt said "the speaker most likely speaks German" (the default hint). Voxtral on Bedrock takes audio only inside a chat message; Bedrock offers no transcription endpoint or language parameter for it. In that mode the model writes in the language the prompt points to, not the language spoken.
+
+Tested on 24 synthetic clips (macOS voices, 12 English incl. 4 with a German accent, 12 German), then 45 clips including sentence-sized pieces of three 16–35 s messages and three noise or silence clips. "Kept" means the answer is in the spoken language.
+
+| Setup | Kept | Notes |
+| --- | --- | --- |
+| Mini, v0.1.3 prompt with "most likely German" | 8/24 | English came back in German, or as `[no speech]`. One German clip looped the same sentence for 2048 tokens. |
+| Mini, no hint | 13–20/22–24 | German came back in English. Short clips got chat answers ("I'm sorry, I can't send you the bill"). |
+| Small, v0.1.3 prompt | 11/24 | Same as Mini: English into German. |
+| Small, no hint | 13/24 | All German turned into English. |
+| Small, language and transcript in one answer | 12/27 | Answered "None: [no speech]" for every English clip. |
+| Mini, name the language first, then transcribe in it | 16–21/27 | Invented whole sentences on noise. |
+| **Small, name the language first, then transcribe in it** | **44/45** | Word error rate 0.07. v0.1.4 uses this. |
+
+Remaining misses with the v0.1.4 setup:
+
+- A single "Ja." is heard as English "Yeah."
+- A sentence that names a language is judged by that word: "My German is not very good, so I will write in English" and "But the transcript was in German, although I was speaking English" were both named German. Even with English set, the second came back as `[no speech]`, so that chunk is missing from the message.
+- Shorter transcription prompts ("Transcribe this audio. The speaker speaks German.") translated German into English. The long prompt with its rules is better (word error rate 0.07 against 0.19–0.30).
+
+Latency per chunk: about 0.2 s for the language and 1.0 s for the transcript (server time), against 0.3 s for Mini's single call. Both Voxtral models are marked Legacy on Bedrock, with end of life on 30 March 2027.
+
 ## Still open
 
 - Real human speech, recorded with a microphone in Mattermost Desktop. TTS is cleaner than real voices, and the microphone permission flow was never exercised.
