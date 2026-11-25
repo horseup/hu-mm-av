@@ -27,7 +27,7 @@ Telegram-style voice messages for [Mattermost](https://mattermost.com). Hold the
 
 1. Download `de.horseup.mm-av-<version>.tar.gz` from the [latest release](https://github.com/horseup/mattermost-plugin-voice-messages/releases/latest). The `.sha256` file next to it has the checksum.
 2. In Mattermost, go to **System Console → Plugins → Plugin Management**, upload the file, and click **Enable** next to "Voice messages".
-   Or install it with [mmctl](https://docs.mattermost.com/manage/mmctl-command-line-tool.html), which needs the same upload setting:
+   Or install it with [mmctl](https://docs.mattermost.com/manage/mmctl-command-line-tool), which needs the same upload setting:
 
    ```bash
    mmctl plugin install-url https://github.com/horseup/mattermost-plugin-voice-messages/releases/download/v0.2.0/de.horseup.mm-av-0.2.0.tar.gz
@@ -68,13 +68,13 @@ The plugin sends audio chunks to [Voxtral](https://mistral.ai/news/voxtral) on A
 | Fallback language | `English` | The model first names the spoken language, then transcribes in it. This language is used only when it can't name one. Write the English name, for example `German`. |
 | Maximum length (seconds) | `300` | Recording stops at this length, and you can listen before sending. |
 
-**Languages.** Tested with English and German, including both in one message. Voxtral is made for English, Spanish, French, Portuguese, Hindi, German, Dutch and Italian; other languages may work less well.
+**Languages.** Tested with English and German, including both in one message. [Mistral](https://mistral.ai/news/voxtral) names English, Spanish, French, Portuguese, Hindi, German, Dutch and Italian among the languages Voxtral handles best. Other languages have not been tested with this plugin.
 
 **What leaves your server.** Only the speech-to-text requests: 16 kHz WAV chunks of 3–15 s, each sent twice to Bedrock in the region you set (once to name the language, once to transcribe). The voice file itself stays in Mattermost's file storage. Chunks the browser recognizes as silence are never sent. The plugin does not log audio or transcripts.
 
 **Cost.** Voxtral Small in `eu-west-1` costs $0.12 per 1M input tokens and $0.35 per 1M output tokens. One chunk of up to 30 s is about 400 input tokens per request, and each chunk takes two requests. 400 minutes of voice messages a month cost roughly $0.30–0.50.
 
-**Model end of life.** AWS lists both Voxtral models as Legacy on Bedrock, with end of life on 30 March 2027. A replacement will come in a later version.
+**Model end of life.** AWS lists both Voxtral models as Legacy on Bedrock, with end of life on 30 March 2027.
 
 ## Known limits
 
