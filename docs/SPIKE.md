@@ -8,7 +8,7 @@ Tested on a local Mattermost 11.7.11 Team Edition (`dev/docker-compose.yml`), wi
 
 v1 looks feasible as scoped. Three checks are still pending: a real microphone in Mattermost Desktop, real voices, and the real mobile apps (see "Still open"). Design changes:
 
-1. Speech-to-text is **Voxtral Mini 3B on Amazon Bedrock in eu-west-1 (Ireland)**, through the Converse API. Mini was preferred over Small on one clip only.
+1. Speech-to-text is **Voxtral Mini 3B on Amazon Bedrock in eu-west-1 (Ireland)**, through the Converse API. Mini was preferred over Small on one clip only. *Superseded in v0.1.4: Voxtral Small, with the language named first (see the follow-up section below).*
 2. Transcription audio is **16 kHz mono WAV** (Voxtral accepts only wav or mp3). Capturing raw PCM while recording is the plan, but its accuracy benefit is not proven: errors showed up on direct WAVs too.
 3. Long messages are split into **chunks of about 30 s, transcribed in parallel**. That keeps requests under the size limit and holds latency at 1–3 s. It does not prevent dropped repeats.
 
@@ -40,13 +40,15 @@ Recording ran in the Claude desktop app's built-in Chromium 156 browser on macOS
 | Voxtral Small, same clip | 2.2 s, and it paraphrased ("kurze Info" for "kurzes Update", "der Hufschmied" for "die Hufschmiedin"). Not better here. |
 | Voxtral Mini, 54 s clip | 2.8 s. Errors: "lammet" (lahmt), "Pferden" (Verden), "Ecke" (App). Numbers and times were right. |
 | Voxtral Mini, WAV decoded from the Chromium AAC | "kurzes App" and "Hofschmiedin". A later run on the direct WAV also got "Appointement" and "Hofschmiedin", so output varies between runs at temperature 0. AAC is not shown to be the cause. |
-| Translation | With "transcribe in its language", Voxtral translated a 3 s German clip into English. Fixed with an explicit prompt (verbatim, never translate) plus an optional language hint: German in 4/4 runs, and an English clip stays English. |
+| Translation | With "transcribe in its language", Voxtral translated a 3 s German clip into English. Fixed with an explicit prompt (verbatim, never translate) plus an optional language hint: German in 4/4 runs, and an English clip stays English. *Wrong for most English clips; see the follow-up section below.* |
 | Repeated audio | A clip that repeats the same sentence came back as one sentence, both at 115 s and inside a 30 s chunk. The model silently drops repeats, and chunking does not prevent it. |
 | Bedrock data handling | Content is not shared with model providers. Retention mode `none` (zero data retention) can be set per account or project through the API. Training use and in-region processing are not stated on the current pages. Set `none` and check Voxtral's `allowed_modes` before production. |
 
 Tokens: about 375 input tokens per 30 s audio window (about 750 per minute), plus about 35 for the prompt. Output is about 4.4 tokens per second of speech.
 
 ## Cost (eu-west-1 list prices, AWS Price List API)
+
+*This is the spike's single call to Mini. Since v0.1.4, Small with two calls per chunk costs about $0.30–0.50 a month for 400 minutes (see README → Cost).*
 
 Voxtral Mini 3B standard: $0.00005 per 1K input tokens and $0.00005 per 1K output tokens. For 200 messages of 2 minutes (400 minutes) a month:
 
@@ -68,7 +70,9 @@ Tested on 24 synthetic clips (macOS voices, 12 English incl. 4 with a German acc
 | Small, no hint | 13/24 | All German turned into English. |
 | Small, language and transcript in one answer | 12/27 | Answered "None: [no speech]" for every English clip. |
 | Mini, name the language first, then transcribe in it | 16–21/27 | Invented whole sentences on noise. |
-| **Small, name the language first, then transcribe in it** | **44/45** | Word error rate 0.07. v0.1.4 uses this. |
+| **Small, name the language first, then transcribe in it** | **43/45** | Word error rate 0.07. v0.1.4 uses this. |
+
+Each row is a single run. Output varies between runs at temperature 0 (the silence clip passed in one run and got an invented sentence in another), so small differences between rows mean little. The harness is `spike/language-eval.py`.
 
 Remaining misses with the v0.1.4 setup:
 
